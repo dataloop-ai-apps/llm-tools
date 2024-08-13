@@ -1,0 +1,89 @@
+{
+    "name": "llm-tools-bitbucket",
+    "displayName": "LLM Tools Bitbucket",
+    "description": "Bitbucket tool for LLMs",
+    "version": "0.1.1",
+    "scope": "project",
+    "components": {
+        "pipelineNodes": [
+            {
+                "invoke": {
+                    "type": "function",
+                    "namespace": "llm-tools-bitbucket-service.llm-tools-bitbucket-module.get_diff_from_pr"
+                },
+                "categories": [
+                    "LLM Tools"
+                ],
+                "name": "Bitbucket Tool",
+                "displayName": "Bitbucket Tool",
+                "description": "Bitbucket Tool",
+                "scope": "node",
+                "configuration": {
+                    "fields": [
+                        {
+                            "name": "name",
+                            "title": "Node Name",
+                            "props": {
+                                "title": true,
+                                "type": "string",
+                                "default": "Bitbucket",
+                                "required": true,
+                                "placeholder": "Insert node name"
+                            },
+                            "rules": [
+                                {
+                                    "type": "required",
+                                    "effect": "error"
+                                }
+                            ],
+                            "widget": "dl-input"
+                        }
+                    ]
+                }
+            }
+        ],
+        "modules": [
+            {
+                "name": "llm-tool-bitbucket-modules",
+                "description": "Bitbucket tool for LLMs",
+                "computeConfig": "llm-tool-bitbucket-service",
+                "functions": [
+                    {
+                        "name": "get_diff_from_pr",
+                        "displayName": "Get PR diff",
+                        "input": [
+                            {
+                                "name": "messages",
+                                "type": "Json[]"
+                            }
+                        ],
+                        "output": [
+                            {
+                                "name": "messages",
+                                "type": "Json[]"
+                            }
+                        ]
+                    }
+                ],
+                "className": "ToolBitbucket",
+                "initInputs": [],
+                "entryPoint": "tool_bitbucket/main.py"
+            }
+        ],
+        "computeConfigs": [
+            {
+                "name": "llm-tool-bitbucket-service",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/llm-tools:0.1.21",
+                    "podType": "regular-xs",
+                    "concurrency": 10,
+                    "autoscaler": {
+                        "minReplicas": 0,
+                        "maxReplicas": 2,
+                        "queueLength": 10
+                    }
+                }
+            }
+        ]
+    }
+}

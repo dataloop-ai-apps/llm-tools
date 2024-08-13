@@ -1,0 +1,95 @@
+{
+    "name": "llm-tools-jira",
+    "displayName": "LLM Tools JIRA",
+    "description": "JIRA tool for LLMs",
+    "version": "0.1.1",
+    "scope": "project",
+    "components": {
+        "pipelineNodes": [
+            {
+                "invoke": {
+                    "type": "function",
+                    "namespace": "llm-tools-jira-service.llm-tools-jira-module.start_pipe"
+                },
+                "categories": [
+                    "LLM Tools"
+                ],
+                "name": "JIRA Tool",
+                "displayName": "JIRA Tool",
+                "description": "JIRA Tool",
+                "scope": "node",
+                "configuration": {
+                    "fields": [
+                        {
+                            "name": "name",
+                            "title": "Node Name",
+                            "props": {
+                                "title": true,
+                                "type": "string",
+                                "default": "JIRA",
+                                "required": true,
+                                "placeholder": "Insert node name"
+                            },
+                            "rules": [
+                                {
+                                    "type": "required",
+                                    "effect": "error"
+                                }
+                            ],
+                            "widget": "dl-input"
+                        }
+                    ]
+                }
+            }
+        ],
+        "modules": [
+            {
+                "name": "llm-tool-jira-modules",
+                "description": "JIRA tool for LLMs",
+                "computeConfig": "llm-tool-jira-service",
+                "functions": [
+                    {
+                        "name": "get_jira_issue_timeline",
+                        "displayName": "Get issue timeline",
+                        "input": [
+                            {
+                                "name": "messages",
+                                "type": "Json[]"
+
+                            }
+                        ],
+                        "output": [
+                            {
+                                "name": "messages",
+                                "type": "Json[]",
+                                "actions": [
+                                    "reply",
+                                    "jira",
+                                    "bitbucket"
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "className": "ToolJIRA",
+                "initInputs": [],
+                "entryPoint": "tool_jira/main.py"
+            }
+        ],
+        "computeConfigs": [
+            {
+                "name": "llm-tool-jira-service",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/llm-tools:0.1.21",
+                    "podType": "regular-xs",
+                    "concurrency": 10,
+                    "autoscaler": {
+                        "minReplicas": 0,
+                        "maxReplicas": 2,
+                        "queueLength": 10
+                    }
+                }
+            }
+        ]
+    }
+}
