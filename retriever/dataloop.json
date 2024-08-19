@@ -2,7 +2,7 @@
   "displayName": "Retriever",
   "name": "llm-tools-retriever",
   "scope": "public",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "attributes": {
     "Provider": "Dataloop",
     "Category": "Application",
@@ -12,7 +12,7 @@
   "codebase": {
     "type": "git",
     "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
-    "gitTag": "0.0.1"
+    "gitTag": "0.0.2"
   },
   "components": {
     "pipelineNodes": [
