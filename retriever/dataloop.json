@@ -1,120 +1,125 @@
 {
-    "displayName": "Retriever",
-    "name": "llm-tools-retriever",
-    "scope": "project",
-    "version": "0.1.17",
-    "attributes": {
-        "Provider": "Dataloop",
-        "Category": "Application",
-        "Application Type": "Node",
-        "Node Type": "Query"
-    },
-    "components": {
-        "pipelineNodes": [
-            {
-                "invoke": {
-                    "type": "function",
-                    "namespace": "retriever-service.retriever-module.query_nearest_items_prompt"
-                },
-                "name": "Retriever Prompt",
-                "categories": [
-                    "query"
-                ],
-                "displayName": "Retriever Prompt",
-                "description": "Query nearest vectors",
-                "scope": "node",
-                "configuration": {
-                    "fields": [
-                        {
-                            "name": "name",
-                            "title": "Node Name",
-                            "props": {
-                                "title": true,
-                                "type": "string",
-                                "default": "Retriever Prompt",
-                                "required": true,
-                                "placeholder": "Insert node name"
-                            },
-                            "rules": [
-                                {
-                                    "type": "required",
-                                    "effect": "error"
-                                }
-                            ],
-                            "widget": "dl-input"
-                        }
-                    ]
-                }
-            }
+  "displayName": "Retriever",
+  "name": "llm-tools-retriever",
+  "scope": "public",
+  "version": "0.0.1",
+  "attributes": {
+    "Provider": "Dataloop",
+    "Category": "Application",
+    "Application Type": "Node",
+    "Node Type": "Query"
+  },
+  "codebase": {
+    "type": "git",
+    "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
+    "gitTag": "0.0.1"
+  },
+  "components": {
+    "pipelineNodes": [
+      {
+        "invoke": {
+          "type": "function",
+          "namespace": "retriever-service.retriever-module.query_nearest_items_prompt"
+        },
+        "name": "Retriever Prompt",
+        "categories": [
+          "query"
         ],
-        "modules": [
+        "displayName": "Retriever Prompt",
+        "description": "Query nearest vectors",
+        "scope": "node",
+        "configuration": {
+          "fields": [
             {
-                "name": "retriever-module",
-                "entryPoint": "retriever/retriever.py",
-                "className": "Retriever",
-                "initInputs": [],
-                "computeConfig": "retriever-service",
-                "versions": {
-                    "dtlpy": "1.93.9"
-                },
-                "functions": [
-                    {
-                        "name": "query_nearest_items_prompt",
-                        "input": [
-                            {
-                                "type": "Item",
-                                "name": "item"
-                            },
-                            {
-                                "type": "String",
-                                "name": "feature_set_id"
-                            },
-                            {
-                                "type": "String",
-                                "name": "dataset_id"
-                            },
-                            {
-                                "type": "String",
-                                "name": "embeddings"
-                            },
-                            {
-                                "type": "Json",
-                                "name": "query"
-                            },
-                            {
-                                "type": "Integer",
-                                "name": "k"
-                            }
-                        ],
-                        "output": [
-                            {
-                                "type": "Item",
-                                "name": "item"
-                            }
-                        ],
-                        "displayIcon": "icon-dl-dataloop",
-                        "displayName": "Retriever"
-                    }
-                ]
-            }
-        ],
-        "computeConfigs": [
-            {
-                "name": "retriever-service",
-                "moduleName": "retriever-module",
-                "versions": {
-                    "dtlpy": "1.93.9"
-                },
-                "runtime": {
-                    "podType": "regular-xs",
-                    "concurrency": 10,
-                    "autoscaler": {
-                        "minReplicas": 1,
-                        "maxReplicas": 2,
-                        "queueLength": 10
-                    }
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "Retriever Prompt",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
                 }
+              ],
+              "widget": "dl-input"
             }
+          ]
+        }
+      }
+    ],
+    "modules": [
+      {
+        "name": "retriever-module",
+        "entryPoint": "retriever/retriever.py",
+        "className": "Retriever",
+        "initInputs": [],
+        "computeConfig": "retriever-service",
+        "versions": {
+          "dtlpy": "1.93.9"
+        },
+        "functions": [
+          {
+            "name": "query_nearest_items_prompt",
+            "input": [
+              {
+                "type": "Item",
+                "name": "item"
+              },
+              {
+                "type": "String",
+                "name": "feature_set_id"
+              },
+              {
+                "type": "String",
+                "name": "dataset_id"
+              },
+              {
+                "type": "String",
+                "name": "embeddings"
+              },
+              {
+                "type": "Json",
+                "name": "query"
+              },
+              {
+                "type": "Integer",
+                "name": "k"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ],
+            "displayIcon": "icon-dl-dataloop",
+            "displayName": "Retriever"
+          }
         ]
-    }
+      }
+    ],
+    "computeConfigs": [
+      {
+        "name": "retriever-service",
+        "moduleName": "retriever-module",
+        "versions": {
+          "dtlpy": "1.93.9"
+        },
+        "runtime": {
+          "podType": "regular-xs",
+          "concurrency": 10,
+          "autoscaler": {
+            "minReplicas": 1,
+            "maxReplicas": 2,
+            "queueLength": 10
+          }
+        }
+      }
+    ]
+  }
 }
