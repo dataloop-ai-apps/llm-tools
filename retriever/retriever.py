@@ -9,8 +9,8 @@ class Retriever(dl.BaseServiceRunner):
 
     @staticmethod
     def query_nearest_items_prompt(item: dl.Item,
-                                   dataset_id: str,
-                                   feature_set_id: str,
+                                   dataset: dl.Dataset,
+                                   embedder: dl.Model,
                                    embeddings: list,
                                    query: dict = None,
                                    k=30):
@@ -26,6 +26,9 @@ class Retriever(dl.BaseServiceRunner):
         :param k: number of neighbours to return
         :return:
         """
+        dataset_id = dataset.id
+        feature_set_name = embedder.configuration.get('featureSetName', embedder.name)
+        feature_set_id = dataset.project.feature_sets.get(feature_set_name=feature_set_name).id
         if item.metadata.get('system', dict()).get('shebang', dict()).get('dltype') != 'prompt':
             raise ValueError(f'Only prompt items are supported. Cant run for item: {item.id}')
         logger.info(f'Starting run with: '
