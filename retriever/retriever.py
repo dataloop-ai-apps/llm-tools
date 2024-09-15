@@ -27,7 +27,8 @@ class Retriever(dl.BaseServiceRunner):
         :return:
         """
         dataset_id = dataset.id
-        feature_set_id = dataset.project.feature_sets.get(feature_set_name=embedder.name).id
+        feature_set_name = embedder.configuration.get('featureSetName', embedder.name)
+        feature_set_id = dataset.project.feature_sets.get(feature_set_name=feature_set_name).id
         if item.metadata.get('system', dict()).get('shebang', dict()).get('dltype') != 'prompt':
             raise ValueError(f'Only prompt items are supported. Cant run for item: {item.id}')
         logger.info(f'Starting run with: '
