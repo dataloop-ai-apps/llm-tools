@@ -97,7 +97,7 @@
                 "name": "item"
               }
             ],
-            "displayIcon": "icon-dl-dataloop",
+            "displayIcon": "icon-dl-retriver",
             "displayName": "Retriever"
           }
         ]
