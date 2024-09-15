@@ -71,12 +71,12 @@
                 "name": "item"
               },
               {
-                "type": "String",
-                "name": "feature_set_id"
+                "type": "Model",
+                "name": "embedder"
               },
               {
-                "type": "String",
-                "name": "dataset_id"
+                "type": "Dataset",
+                "name": "dataset"
               },
               {
                 "type": "Json",
