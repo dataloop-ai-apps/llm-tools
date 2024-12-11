@@ -6,8 +6,11 @@
   "attributes": {
     "Provider": "Dataloop",
     "Category": "Application",
-    "Application Type": "Node",
-    "Node Type": "Query"
+    "Application Type": "Pipeline Node",
+    "Deployed By": "Dataloop",
+    "Media Type": [
+      "Text"
+    ]
   },
   "codebase": {
     "type": "git",
