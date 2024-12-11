@@ -7,7 +7,6 @@
     "Provider": "Dataloop",
     "Category": "Application",
     "Application Type": "Pipeline Node",
-    "Node Type": "Query",
     "Deployed By": "Dataloop",
     "Media Type": [
       "Text"
