@@ -19,8 +19,8 @@ class Retriever(dl.BaseServiceRunner):
         Euclidean distance over features from the input feature_set_id
 
         :param item: input prompt item, used for saving the nearest items
-        :param dataset_id: query over items from this dataset
-        :param feature_set_id: query over feature vectors from this feature set
+        :param dataset: query over items from this dataset
+        :param embedder: query over feature vectors created by this embedder
         :param embeddings: the input vector to find similarities
         :param query: input items query to filter the searchable items
         :param k: number of neighbours to return
