@@ -62,9 +62,6 @@
         "className": "Retriever",
         "initInputs": [],
         "computeConfig": "retriever-service",
-        "versions": {
-          "dtlpy": "1.93.9"
-        },
         "functions": [
           {
             "name": "query_nearest_items_prompt",
@@ -110,14 +107,11 @@
       {
         "name": "retriever-service",
         "moduleName": "retriever-module",
-        "versions": {
-          "dtlpy": "1.93.9"
-        },
         "runtime": {
           "podType": "regular-xs",
           "concurrency": 10,
           "autoscaler": {
-            "minReplicas": 1,
+            "minReplicas": 0,
             "maxReplicas": 2,
             "queueLength": 10
           }
