@@ -2,7 +2,7 @@
   "displayName": "Frames to Prompt",
   "name": "llm-tools-frames-to-prompt",
   "scope": "public",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Group frame items into batches and create prompt items with text and image elements for VLM inference.",
   "attributes": {
     "Provider": "Dataloop",
@@ -17,7 +17,7 @@
   "codebase": {
     "type": "git",
     "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
-    "gitTag": "0.0.8"
+    "gitTag": "0.0.9"
   },
   "components": {
     "pipelineNodes": [
