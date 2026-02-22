@@ -1,0 +1,159 @@
+{
+  "displayName": "Frames to Prompt",
+  "name": "llm-tools-frames-to-prompt",
+  "scope": "public",
+  "version": "0.0.8",
+  "description": "Group frame items into batches and create prompt items with text and image elements for VLM inference.",
+  "attributes": {
+    "Provider": "Dataloop",
+    "Category": "Application",
+    "Application Type": "Pipeline Node",
+    "Deployed By": "Dataloop",
+    "Media Type": [
+      "Image",
+      "Text"
+    ]
+  },
+  "codebase": {
+    "type": "git",
+    "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
+    "gitTag": "0.0.8"
+  },
+  "components": {
+    "pipelineNodes": [
+      {
+        "invoke": {
+          "type": "function",
+          "namespace": "frames-to-prompt-service.frames-to-prompt-module.run"
+        },
+        "name": "frames-to-prompt",
+        "categories": [
+          "prompt-utils"
+        ],
+        "displayName": "Frames to Prompt",
+        "description": "Group frame items into batches and create prompt items with text and image elements for VLM inference.",
+        "scope": "node",
+        "configuration": {
+          "fields": [
+            {
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "Frames to Prompt",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "group_size",
+              "title": "Group Size",
+              "props": {
+                "title": true,
+                "type": "number",
+                "default": 4,
+                "min": 1,
+                "step": 1,
+                "required": true,
+                "placeholder": "Number of frames per prompt group"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "prompt_dir",
+              "title": "Prompt Items Output Directory",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "/prompt_items_dir",
+                "required": true,
+                "placeholder": "Insert output directory for prompt items"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "prompt_instruction",
+              "title": "Prompt Instruction",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "Provide a detailed description of this video segment: describe the scene, setting, and environment; describe the actions, movements, and interactions taking place; note any changes or progression between frames; ",
+                "required": true,
+                "placeholder": "Insert the instruction to include in each prompt"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            }
+          ]
+        }
+      }
+    ],
+    "modules": [
+      {
+        "name": "frames-to-prompt-module",
+        "entryPoint": "prompt_tools/frames_to_prompt.py",
+        "className": "ServiceRunner",
+        "computeConfig": "frames-to-prompt-service",
+        "initInputs": [],
+        "functions": [
+          {
+            "name": "run",
+            "input": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item[]",
+                "name": "items"
+              }
+            ],
+            "displayIcon": "qa-sampling",
+            "displayName": "Frames to Prompt"
+          }
+        ]
+      }
+    ],
+    "computeConfigs": [
+      {
+        "name": "frames-to-prompt-service",
+        "runtime": {
+          "podType": "regular-xs",
+          "concurrency": 10,
+          "autoscaler": {
+            "minReplicas": 0,
+            "maxReplicas": 2,
+            "queueLength": 10
+          }
+        }
+      }
+    ]
+  }
+}
