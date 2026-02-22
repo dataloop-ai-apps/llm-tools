@@ -34,11 +34,6 @@ def frame_index_from_name(item_name: str) -> int:
 
 
 class ServiceRunner(dl.BaseServiceRunner):
-    def __init__(self):
-        self.group_size = DEFAULT_GROUP_SIZE
-        self.prompt_dir = DEFAULT_PROMPT_DIR
-        self.prompt_instruction = DEFAULT_PROMPT_INSTRUCTION
-        self.dataset = None
 
     def get_cycle_items(self, item: dl.Item) -> List[dl.Item]:
         """
