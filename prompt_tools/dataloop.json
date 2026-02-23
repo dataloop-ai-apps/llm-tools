@@ -108,46 +108,6 @@
                 }
               ],
               "widget": "dl-input"
-            },
-            {
-              "name": "frames_per_chunk",
-              "title": "Frames per Chunk",
-              "props": {
-                "title": true,
-                "type": "number",
-                "default": 250,
-                "min": 1,
-                "step": 1,
-                "required": true,
-                "placeholder": "Must match the splitter_arg of the upstream Video to Videos node"
-              },
-              "rules": [
-                {
-                  "type": "required",
-                  "effect": "error"
-                }
-              ],
-              "widget": "dl-input"
-            },
-            {
-              "name": "n_overlap",
-              "title": "Frame Overlap between Chunks",
-              "props": {
-                "title": true,
-                "type": "number",
-                "default": 0,
-                "min": 0,
-                "step": 1,
-                "required": true,
-                "placeholder": "Must match the n_overlap of the upstream Video to Videos node"
-              },
-              "rules": [
-                {
-                  "type": "required",
-                  "effect": "error"
-                }
-              ],
-              "widget": "dl-input"
             }
           ]
         }
