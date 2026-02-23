@@ -17,31 +17,18 @@ DEFAULT_PROMPT_INSTRUCTION = (
     "(5) Notable changes or transitions between frames. "
     "Be specific and factual — mention colors, positions, counts, and directions where applicable."
 )
-DEFAULT_FRAMES_PER_CHUNK = 250
-DEFAULT_N_OVERLAP = 0
 
 
-def frame_index_from_name(
-    item_name: str,
-    frames_per_chunk: int = DEFAULT_FRAMES_PER_CHUNK,
-    n_overlap: int = DEFAULT_N_OVERLAP,
-) -> int:
-    """
-    Derive the original frame index from the item name.
-    Assumes the video was split into chunks of frames_per_chunk frames
-    with n_overlap overlapping frames between consecutive chunks,
-    and the item name follows the pattern: <video>_<chunk>_<frame>.<ext>
-    e.g. with frames_per_chunk=250, n_overlap=25:
-         dancetrack0066_0002_058 -> 0002 * (250-25) + 58 = 508
+def parse_frame_index(item_name: str) -> int:
+    """Extract the local frame index from the item filename.
+
+    The Smart Frames Splitting node names frames as:
+        <sub_video_name>_<frame_idx>.<ext>
+    e.g. boat-16_000_042.jpg -> 42
     """
     base = os.path.splitext(item_name)[0]
-    parts = base.rsplit('_', 2)
-    if len(parts) < 3:
-        raise ValueError(f"Cannot parse frame index from item name: {item_name}")
-    chunk_index = int(parts[-2])
-    frame_in_chunk = int(parts[-1])
-    stride = frames_per_chunk - n_overlap
-    return chunk_index * stride + frame_in_chunk
+    trailing = base.rsplit('_', 1)[-1]
+    return int(trailing)
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -49,7 +36,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     def get_cycle_items(self, item: dl.Item) -> List[dl.Item]:
         """
         Gets all items in the current pipeline cycle based on the received item's metadata.
-        Uses origin_video_name and created_time to identify items belonging to the same cycle.
+        Uses origin_video_name and time to identify items belonging to the same cycle.
 
         Args:
             item (dl.Item): Reference item from the wait node
@@ -65,10 +52,10 @@ class ServiceRunner(dl.BaseServiceRunner):
         if original_video_name is not None:
             filters.add(field='metadata.origin_video_name', values=original_video_name)
 
-        # Filter by created_time if available
-        created_time = item.metadata.get('created_time', None)
-        if created_time is not None:
-            filters.add(field='metadata.created_time', values=created_time)
+        # Filter by pipeline run time to isolate frames from the same execution
+        run_time = item.metadata.get('time', None)
+        if run_time is not None:
+            filters.add(field='metadata.time', values=run_time)
 
         # Filter by sub-video prefix (e.g. MOT16-05-raw_000_122.jpg -> MOT16-05-raw_000_*)
         base = os.path.splitext(item.name)[0]
@@ -105,8 +92,6 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.group_size = node_config.get('group_size', DEFAULT_GROUP_SIZE)
         self.prompt_dir = node_config.get('prompt_dir', DEFAULT_PROMPT_DIR)
         self.prompt_instruction = node_config.get('prompt_instruction', DEFAULT_PROMPT_INSTRUCTION)
-        self.frames_per_chunk = node_config.get('frames_per_chunk', DEFAULT_FRAMES_PER_CHUNK)
-        self.n_overlap = node_config.get('n_overlap', DEFAULT_N_OVERLAP)
         logger.info(f"Group size: {self.group_size}")
 
         self.dataset = item.dataset
@@ -127,15 +112,24 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.info(f"Processing group starting at position {group_start} with {len(group)} items")
 
             items_ids_list = [i.id for i in group]
-            items_frame_index = sorted([frame_index_from_name(i.name, self.frames_per_chunk, self.n_overlap) for i in group])
+            frame_indices = sorted([parse_frame_index(i.name) for i in group])
 
-            frames_str = '_'.join(str(i) for i in items_frame_index)
+            fps = group[0].metadata.get('fps', None)
+            if fps and fps > 0:
+                frame_timestamps = [round(idx / fps, 2) for idx in frame_indices]
+                timestamps_str = ', '.join(f'{t}s' for t in frame_timestamps)
+                temporal_context = f"at timestamps {timestamps_str} into the video segment"
+            else:
+                frame_timestamps = None
+                temporal_context = f"at frame positions {', '.join(str(i) for i in frame_indices)}"
+
+            frames_str = '_'.join(str(i) for i in frame_indices)
             prompt_name = f'video-frames-prompt-{frames_str}'
             prompt_item = dl.PromptItem(name=prompt_name)
 
             frame_description = (
                 f"These {len(items_ids_list)} images are sequential frames extracted from a video "
-                f"at frame indices {', '.join(str(i) for i in items_frame_index)}. "
+                f"{temporal_context}. "
                 f"{self.prompt_instruction}"
             )
 
@@ -151,14 +145,16 @@ class ServiceRunner(dl.BaseServiceRunner):
             uploaded = self.dataset.items.upload(prompt_item, remote_path=prompt_dir)
 
             uploaded.metadata['user'] = uploaded.metadata.get('user', {})
-            uploaded.metadata['user']['frame_indices'] = items_frame_index
+            uploaded.metadata['user']['frame_indices'] = frame_indices
+            if frame_timestamps is not None:
+                uploaded.metadata['user']['frame_timestamps'] = frame_timestamps
 
             origin_video_name = item.metadata.get('origin_video_name', None)
             if origin_video_name is not None:
                 uploaded.metadata['origin_video_name'] = origin_video_name
-            created_time = item.metadata.get('created_time', None)
-            if created_time is not None:
-                uploaded.metadata['created_time'] = created_time
+            run_time = item.metadata.get('time', None)
+            if run_time is not None:
+                uploaded.metadata['time'] = run_time
 
             # TODO: if want to reset this, also add :
             # "hyde_model_name": "nim-phi-4-multimodal-instruct" 
