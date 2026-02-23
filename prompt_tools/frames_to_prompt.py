@@ -9,20 +9,30 @@ logger = logging.getLogger('llm-tools.frames-to-prompt')
 DEFAULT_GROUP_SIZE = 4
 DEFAULT_PROMPT_DIR = '/prompt_items_dir'
 DEFAULT_PROMPT_INSTRUCTION = (
-    "Provide a detailed description of this video segment: "
-    "describe the scene, setting, and environment; "
-    "describe the actions, movements, and interactions taking place; "
-    "note any changes or progression between frames; "
+    "Analyze these sequential video frames and provide a detailed, search-friendly description. "
+    "Include: (1) Key objects, people, and entities visible; "
+    "(2) Actions, movements, and events occurring; "
+    "(3) Scene setting, location type, and environment; "
+    "(4) Any text, signs, or identifiable information; "
+    "(5) Notable changes or transitions between frames. "
+    "Be specific and factual — mention colors, positions, counts, and directions where applicable."
 )
-FRAMES_PER_CHUNK = 250
+DEFAULT_FRAMES_PER_CHUNK = 250
+DEFAULT_N_OVERLAP = 0
 
 
-def frame_index_from_name(item_name: str) -> int:
+def frame_index_from_name(
+    item_name: str,
+    frames_per_chunk: int = DEFAULT_FRAMES_PER_CHUNK,
+    n_overlap: int = DEFAULT_N_OVERLAP,
+) -> int:
     """
     Derive the original frame index from the item name.
-    Assumes the video was split into chunks of FRAMES_PER_CHUNK frames,
+    Assumes the video was split into chunks of frames_per_chunk frames
+    with n_overlap overlapping frames between consecutive chunks,
     and the item name follows the pattern: <video>_<chunk>_<frame>.<ext>
-    e.g. dancetrack0066_0002_058 -> 0002 * 250 + 58 = 558
+    e.g. with frames_per_chunk=250, n_overlap=25:
+         dancetrack0066_0002_058 -> 0002 * (250-25) + 58 = 508
     """
     base = os.path.splitext(item_name)[0]
     parts = base.rsplit('_', 2)
@@ -30,7 +40,8 @@ def frame_index_from_name(item_name: str) -> int:
         raise ValueError(f"Cannot parse frame index from item name: {item_name}")
     chunk_index = int(parts[-2])
     frame_in_chunk = int(parts[-1])
-    return chunk_index * FRAMES_PER_CHUNK + frame_in_chunk
+    stride = frames_per_chunk - n_overlap
+    return chunk_index * stride + frame_in_chunk
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -94,6 +105,8 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.group_size = node_config.get('group_size', DEFAULT_GROUP_SIZE)
         self.prompt_dir = node_config.get('prompt_dir', DEFAULT_PROMPT_DIR)
         self.prompt_instruction = node_config.get('prompt_instruction', DEFAULT_PROMPT_INSTRUCTION)
+        self.frames_per_chunk = node_config.get('frames_per_chunk', DEFAULT_FRAMES_PER_CHUNK)
+        self.n_overlap = node_config.get('n_overlap', DEFAULT_N_OVERLAP)
         logger.info(f"Group size: {self.group_size}")
 
         self.dataset = item.dataset
@@ -114,7 +127,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.info(f"Processing group starting at position {group_start} with {len(group)} items")
 
             items_ids_list = [i.id for i in group]
-            items_frame_index = sorted([frame_index_from_name(i.name) for i in group])
+            items_frame_index = sorted([frame_index_from_name(i.name, self.frames_per_chunk, self.n_overlap) for i in group])
 
             frames_str = '_'.join(str(i) for i in items_frame_index)
             prompt_name = f'video-frames-prompt-{frames_str}'
