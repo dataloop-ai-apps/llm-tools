@@ -97,9 +97,49 @@
               "props": {
                 "title": true,
                 "type": "string",
-                "default": "Provide a detailed description of this video segment: describe the scene, setting, and environment; describe the actions, movements, and interactions taking place; note any changes or progression between frames; ",
+                "default": "Analyze these sequential video frames and provide a detailed, search-friendly description. Include: (1) Key objects, people, and entities visible; (2) Actions, movements, and events occurring; (3) Scene setting, location type, and environment; (4) Any text, signs, or identifiable information; (5) Notable changes or transitions between frames. Be specific and factual — mention colors, positions, counts, and directions where applicable.",
                 "required": true,
                 "placeholder": "Insert the instruction to include in each prompt"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "frames_per_chunk",
+              "title": "Frames per Chunk",
+              "props": {
+                "title": true,
+                "type": "number",
+                "default": 250,
+                "min": 1,
+                "step": 1,
+                "required": true,
+                "placeholder": "Must match the splitter_arg of the upstream Video to Videos node"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "n_overlap",
+              "title": "Frame Overlap between Chunks",
+              "props": {
+                "title": true,
+                "type": "number",
+                "default": 0,
+                "min": 0,
+                "step": 1,
+                "required": true,
+                "placeholder": "Must match the n_overlap of the upstream Video to Videos node"
               },
               "rules": [
                 {
