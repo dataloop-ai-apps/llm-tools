@@ -53,4 +53,14 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         uploaded = item.dataset.items.upload(prompt_item, remote_path=prompt_dir)
         logger.info(f"Uploaded prompt item: {uploaded.id}")
+
+        user_meta_in = item.metadata.get('user', {})
+        out_user = uploaded.metadata.setdefault('user', {})
+        out_user['origin_video_name'] = user_meta_in.get('origin_video_name', item.name)
+        for key in ('time', 'sub_videos_intervals'):
+            value = user_meta_in.get(key)
+            if value is not None:
+                out_user[key] = value
+        uploaded = uploaded.update()
+
         return uploaded
