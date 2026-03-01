@@ -1,9 +1,9 @@
 {
-  "displayName": "Frames to Prompt",
+  "displayName": "Prompt Tools",
   "name": "llm-tools-frames-to-prompt",
   "scope": "public",
   "version": "0.0.11",
-  "description": "Group frame items into batches and create prompt items with text and image elements for VLM inference.",
+  "description": "Pipeline nodes for building prompt items: group frames into batches or create video prompts for VLM inference.",
   "attributes": {
     "Provider": "Dataloop",
     "Category": "Application",
@@ -11,7 +11,8 @@
     "Deployed By": "Dataloop",
     "Media Type": [
       "Image",
-      "Text"
+      "Text",
+      "Video"
     ]
   },
   "codebase": {
@@ -111,6 +112,89 @@
             }
           ]
         }
+      },
+      {
+        "invoke": {
+          "type": "function",
+          "namespace": "video-to-prompt-service.video-to-prompt-module.run"
+        },
+        "name": "video-to-prompt",
+        "categories": [
+          "prompt-utils"
+        ],
+        "displayName": "Video to Prompt",
+        "description": "Create a prompt item from a video item using its stream URL for VLM inference.",
+        "scope": "node",
+        "configuration": {
+          "fields": [
+            {
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "Video to Prompt",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "model_id",
+              "title": "Model ID",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "",
+                "required": false,
+                "placeholder": "Insert model ID (optional)"
+              },
+              "widget": "dl-input"
+            },
+            {
+              "name": "prompt_dir",
+              "title": "Prompt Items Output Directory",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "/prompt_items_dir",
+                "required": true,
+                "placeholder": "Insert output directory for prompt items"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            },
+            {
+              "name": "prompt_instruction",
+              "title": "Prompt Instruction",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "Analyze this video and provide a detailed, search-friendly description. Include: (1) Key objects, people, and entities visible; (2) Actions, movements, and events occurring; (3) Scene setting, location type, and environment; (4) Any text, signs, or identifiable information; (5) Notable changes or transitions throughout the video. Be specific and factual — mention colors, positions, counts, and directions where applicable.",
+                "required": true,
+                "placeholder": "Insert the instruction to include in the prompt"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            }
+          ]
+        }
       }
     ],
     "modules": [
@@ -139,11 +223,49 @@
             "displayName": "Frames to Prompt"
           }
         ]
+      },
+      {
+        "name": "video-to-prompt-module",
+        "entryPoint": "prompt_tools/video_to_prompt.py",
+        "className": "ServiceRunner",
+        "computeConfig": "video-to-prompt-service",
+        "initInputs": [],
+        "functions": [
+          {
+            "name": "run",
+            "input": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ],
+            "displayIcon": "qa-sampling",
+            "displayName": "Video to Prompt"
+          }
+        ]
       }
     ],
     "computeConfigs": [
       {
         "name": "frames-to-prompt-service",
+        "runtime": {
+          "podType": "regular-xs",
+          "concurrency": 10,
+          "autoscaler": {
+            "minReplicas": 0,
+            "maxReplicas": 2,
+            "queueLength": 10
+          }
+        }
+      },
+      {
+        "name": "video-to-prompt-service",
         "runtime": {
           "podType": "regular-xs",
           "concurrency": 10,
