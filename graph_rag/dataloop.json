@@ -1,0 +1,207 @@
+{
+  "name": "graph-rag",
+  "displayName": "Graph RAG",
+  "version": "0.0.11",
+  "description": "Knowledge graph construction, retrieval, and visualization for RAG pipelines.",
+  "codebase": {
+    "type": "git",
+    "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
+    "gitTag": "0.0.11"
+  },
+  "components": {
+    "modules": [
+      {
+        "name": "graph-rag-module",
+        "entryPoint": "video_search_summarization/node/graph_rag.py",
+        "className": "ServiceRunner",
+        "functions": [
+          {
+            "name": "add_chunk_to_graph",
+            "description": "Incrementally add a chunk (prompt item or JSON) to the dataset knowledge graph. Extracts entities and relationships and merges them into the graph.",
+            "input": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ]
+          },
+          {
+            "name": "query_graph",
+            "description": "Query the knowledge graph with Cypher-like structured filters (entity_name, relationship, target_name) or natural-language keyword extraction. Adds retrieved context to the prompt item.",
+            "input": [
+              {
+                "type": "Item",
+                "name": "item"
+              },
+              {
+                "type": "Dataset",
+                "name": "dataset"
+              },
+              {
+                "type": "String",
+                "name": "entity_name"
+              },
+              {
+                "type": "String",
+                "name": "relationship"
+              },
+              {
+                "type": "String",
+                "name": "target_name"
+              },
+              {
+                "type": "Integer",
+                "name": "hops"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ]
+          },
+          {
+            "name": "export_graph",
+            "description": "Visualize the full dataset knowledge graph and upload the image to the dataset.",
+            "input": [
+              {
+                "type": "Dataset",
+                "name": "dataset"
+              }
+            ],
+            "output": [
+              {
+                "type": "Item",
+                "name": "item"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "services": [
+      {
+        "name": "graph-rag-service",
+        "moduleName": "graph-rag-module",
+        "runtime": {
+          "podType": "regular-xs",
+          "concurrency": 1,
+          "autoscaler": {
+            "type": "rabbitmq",
+            "minReplicas": 0,
+            "maxReplicas": 1,
+            "queueLength": 10
+          }
+        }
+      }
+    ],
+    "pipelineNodes": [
+      {
+        "name": "add-chunk-to-graph",
+        "invoke": {
+          "type": "function",
+          "namespace": "graph-rag-service.graph-rag-module.add_chunk_to_graph"
+          },
+        "categories": ["graph-rag"],
+        "displayName": "Add Chunk to Graph",
+        "description": "Add a chunk to the graph.",
+        "scope": "project",
+        "configuration": {
+          "fields": [
+            {
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "add-chunk-to-graph",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            }
+          ]
+        }
+      },
+      {
+        "name": "query-graph",
+        "invoke": {
+          "type": "function",
+          "namespace": "graph-rag-service.graph-rag-module.query_graph"
+        },
+        "categories": ["graph-rag"],
+        "displayName": "Query Graph",
+        "description": "Query the graph for relevant chunks.",
+        "scope": "project",
+        "configuration": {
+          "fields": [
+            {
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "query-graph",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            }
+          ]
+        }
+      },
+      {
+        "name": "export-graph",
+        "invoke": {
+          "type": "function",
+          "namespace": "graph-rag-service.graph-rag-module.export_graph"
+        },
+        "categories": ["graph-rag"],
+        "displayName": "Export Graph",
+        "description": "Export the graph as an image.",
+        "scope": "project",
+        "configuration": {
+          "fields": [
+            {
+              "name": "name",
+              "title": "Node Name",
+              "props": {
+                "title": true,
+                "type": "string",
+                "default": "export-graph",
+                "required": true,
+                "placeholder": "Insert node name"
+              },
+              "rules": [
+                {
+                  "type": "required",
+                  "effect": "error"
+                }
+              ],
+              "widget": "dl-input"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
