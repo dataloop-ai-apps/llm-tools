@@ -12,7 +12,7 @@
     "modules": [
       {
         "name": "graph-rag-module",
-        "entryPoint": "video_search_summarization/node/graph_rag.py",
+        "entryPoint": "graph_rag/graph_rag.py",
         "className": "ServiceRunner",
         "functions": [
           {
@@ -92,6 +92,7 @@
         "moduleName": "graph-rag-module",
         "runtime": {
           "podType": "regular-xs",
+          "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/graph-rag:0.0.11",
           "concurrency": 1,
           "autoscaler": {
             "type": "rabbitmq",
