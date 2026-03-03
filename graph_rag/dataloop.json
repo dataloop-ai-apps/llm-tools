@@ -66,22 +66,6 @@
                 "name": "item"
               }
             ]
-          },
-          {
-            "name": "export_graph",
-            "description": "Visualize the full dataset knowledge graph and upload the image to the dataset.",
-            "input": [
-              {
-                "type": "Dataset",
-                "name": "dataset"
-              }
-            ],
-            "output": [
-              {
-                "type": "Item",
-                "name": "item"
-              }
-            ]
           }
         ]
       }
@@ -91,14 +75,13 @@
         "name": "graph-rag-service",
         "moduleName": "graph-rag-module",
         "runtime": {
-          "podType": "regular-xs",
+          "podType": "regular-s",
           "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/graph-rag:0.0.11",
-          "concurrency": 1,
+          "concurrency": 5,
           "autoscaler": {
             "type": "rabbitmq",
-            "minReplicas": 0,
-            "maxReplicas": 1,
-            "queueLength": 10
+            "minReplicas": 1,
+            "maxReplicas": 1
           }
         }
       }
@@ -156,39 +139,6 @@
                 "title": true,
                 "type": "string",
                 "default": "query-graph",
-                "required": true,
-                "placeholder": "Insert node name"
-              },
-              "rules": [
-                {
-                  "type": "required",
-                  "effect": "error"
-                }
-              ],
-              "widget": "dl-input"
-            }
-          ]
-        }
-      },
-      {
-        "name": "export-graph",
-        "invoke": {
-          "type": "function",
-          "namespace": "graph-rag-service.graph-rag-module.export_graph"
-        },
-        "categories": ["graph-rag"],
-        "displayName": "Export Graph",
-        "description": "Export the graph as an image.",
-        "scope": "project",
-        "configuration": {
-          "fields": [
-            {
-              "name": "name",
-              "title": "Node Name",
-              "props": {
-                "title": true,
-                "type": "string",
-                "default": "export-graph",
                 "required": true,
                 "placeholder": "Insert node name"
               },

@@ -10,10 +10,14 @@ import json
 import re
 import os
 import tempfile
+import threading
 from datetime import datetime
 
 logger = logging.getLogger("[GRAPH-RAG]")
 
+SAVE_INTERVAL_SEC = 5 * 60
+GRAPH_PATH = "/graph_rag"
+GRAPH_FILENAME = "knowledge_graph.json"
 # ====================================================================== #
 #  add_chunk_to_graph accepts two input formats:                         #
 #                                                                        #
@@ -103,7 +107,6 @@ GRAPH_EXTRACTION_SCHEMA = {
     "required": ["entities", "relationships"],
 }
 
-GRAPH_PATH = "/graph_rag"
 
 STOP_WORDS = {
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -125,12 +128,71 @@ STOP_WORDS = {
 
 class ServiceRunner(dl.BaseServiceRunner):
 
-    # ------------------------------------------------------------------ #
-    #  Graph persistence — single graph per dataset                       #
-    # ------------------------------------------------------------------ #
-    GRAPH_FILENAME = "knowledge_graph.json"
+    def __init__(self):
+        super().__init__()
+        self._graphs: dict[str, nx.DiGraph] = {}
+        self._dirty: dict[str, bool] = {}
+        self._datasets: dict[str, dl.Dataset] = {}
+        self._lock = threading.Lock()
 
-    def _load_graph(self, dataset: dl.Dataset) -> nx.DiGraph:
+        self._stop_event = threading.Event()
+        self._saver_thread = threading.Thread(
+            target=self._background_saver, daemon=True,
+        )
+        self._saver_thread.start()
+        logger.info("Graph-RAG service initialised, background saver started")
+
+    # ------------------------------------------------------------------ #
+    #  Per-dataset graph cache                                             #
+    # ------------------------------------------------------------------ #
+    def _get_graph(self, dataset: dl.Dataset) -> nx.DiGraph:
+        """Return the in-memory graph for *dataset*, loading on first access."""
+        ds_id = dataset.id
+        if ds_id not in self._graphs:
+            with self._lock:
+                if ds_id not in self._graphs:
+                    self._graphs[ds_id] = self._download_graph(dataset)
+                    self._dirty[ds_id] = False
+                    self._datasets[ds_id] = dataset
+        return self._graphs[ds_id]
+
+    def _mark_dirty(self, dataset_id: str):
+        self._dirty[dataset_id] = True
+
+    # ------------------------------------------------------------------ #
+    #  Background saver — uploads every SAVE_INTERVAL_SEC if dirty         #
+    # ------------------------------------------------------------------ #
+    def _background_saver(self):
+        while not self._stop_event.is_set():
+            self._stop_event.wait(timeout=SAVE_INTERVAL_SEC)
+            self._flush_dirty_graphs()
+
+    def _flush_dirty_graphs(self):
+        for ds_id in list(self._dirty):
+            if not self._dirty.get(ds_id):
+                continue
+            with self._lock:
+                # re-check after acquiring lock — another thread may have saved it
+                if not self._dirty.get(ds_id):
+                    continue
+                G = self._graphs[ds_id]
+                dataset = self._datasets[ds_id]
+                self._dirty[ds_id] = False
+            try:
+                self._upload_graph(G, dataset)
+                self._visualize_and_upload(G, dataset)
+                logger.info(
+                    f"Background save: dataset {ds_id} — "
+                    f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
+                )
+            except Exception:
+                logger.exception(f"Background save failed for dataset {ds_id}")
+                self._dirty[ds_id] = True
+
+    # ------------------------------------------------------------------ #
+    #  Graph download / upload helpers                                     #
+    # ------------------------------------------------------------------ #
+    def _download_graph(self, dataset: dl.Dataset) -> nx.DiGraph:
         try:
             filters = dl.Filters()
             filters.add(field="name", values=self.GRAPH_FILENAME)
@@ -141,15 +203,15 @@ class ServiceRunner(dl.BaseServiceRunner):
                 data = json.loads(buf.read().decode("utf-8"))
                 G = nx.node_link_graph(data)
                 logger.info(
-                    f"Loaded graph: "
+                    f"Loaded graph for dataset {dataset.id}: "
                     f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
                 )
                 return G
         except Exception as e:
-            logger.info(f"No existing graph found ({e}), creating new")
+            logger.info(f"No existing graph for dataset {dataset.id} ({e}), creating new")
         return nx.DiGraph()
 
-    def _save_graph(self, G: nx.DiGraph, dataset: dl.Dataset) -> dl.Item:
+    def _upload_graph(self, G: nx.DiGraph, dataset: dl.Dataset) -> dl.Item:
         data = nx.node_link_data(G)
         data["_meta"] = {
             "num_nodes": G.number_of_nodes(),
@@ -247,14 +309,15 @@ class ServiceRunner(dl.BaseServiceRunner):
         chunk_name, text, entities, relationships = self._parse_item(item)
 
         dataset = item.dataset
-        G = self._load_graph(dataset)
+        G = self._get_graph(dataset)
 
-        self._merge_into_graph(G, chunk_name, text, item.id, entities, relationships)
+        with self._lock:
+            self._merge_into_graph(G, chunk_name, text, item.id, entities, relationships)
+            self._mark_dirty(dataset.id)
 
-        self._save_graph(G, dataset)
         logger.info(
-            f"Added chunk {chunk_name} to graph "
-            f"- {len(entities)} entities, {len(relationships)} relations"
+            f"Added chunk {chunk_name!r} to graph (dataset {dataset.id}) "
+            f"— {len(entities)} entities, {len(relationships)} relations"
         )
         return item
 
@@ -265,7 +328,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             .get("shebang", {})
             .get("dltype")
             == "prompt"
-        )
+        )  # TODO: IF JSON - WHETER A PRPMOT, NO NEEED FOR THIS FUNCTION
 
     @staticmethod
     def _parse_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]:
@@ -278,7 +341,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             return ServiceRunner._parse_prompt_item(item)
 
         mimetype = item.metadata.get("system", {}).get("mimetype", "")
-        if mimetype.startswith("application/json") or item.name.endswith(".json"):
+        if mimetype.startswith("application/json") or item.name.endswith(".json"): #TODO: change this one
             return ServiceRunner._parse_json_item(item)
 
         raise ValueError(
@@ -309,6 +372,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             raise ValueError(
                 f"Prompt item '{item.name}' has no assistant response to extract."
             )
+        # TODO: EITHER 
 
         data = ServiceRunner._extract_json(assistant_raw)
         entities, relationships = ServiceRunner._split_entities_and_relationships(data)
@@ -317,10 +381,10 @@ class ServiceRunner(dl.BaseServiceRunner):
             user_text,
             entities,
             relationships,
-        )
+        ) # todo: do inned this?
 
     @staticmethod
-    def _extract_json(text: str):
+    def _extract_json(text: str): #todo: check if there is a function for it
         """Extract JSON from a raw LLM response, stripping markdown fences and surrounding text."""
         fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
         if fence_match:
@@ -357,7 +421,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         raise ValueError(f"Unexpected JSON type: {type(data).__name__}")
 
     @staticmethod
-    def _parse_json_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]:
+    def _parse_json_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]: 
         """Parse a structured JSON item with entities and relationships."""
         buf = item.download(save_locally=False)
         raw = buf.read().decode("utf-8", errors="replace").strip()
@@ -371,6 +435,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             data.get("entities", []),
             data.get("relationships", []),
         )
+        # TODO: 1 RETURN
 
     # ------------------------------------------------------------------ #
     #  2. Retrieve from graph — structured + keyword query                 #
@@ -425,7 +490,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         else:
             if not query_text:
                 logger.warning(f"No user message in prompt item {item.id}")
-                return item
+                return item 
             matched_edges, chunks = self._keyword_query(
                 G, query_text, hops,
             )
@@ -581,7 +646,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     #  BFS chunk collector                                                 #
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _collect_chunks_bfs(
+    def _collect_chunks_bfs( # TODO : WHETER THERE IS A FUNCTION TO BFS
         G: nx.DiGraph, seed_nodes: set[str], max_hops: int,
     ) -> list[dict]:
         """
@@ -717,15 +782,8 @@ class ServiceRunner(dl.BaseServiceRunner):
         return {w for w in words if len(w) > 2 and w not in STOP_WORDS}
 
     # ------------------------------------------------------------------ #
-    #  3. Visualize & upload                                              #
+    #  Visualize & upload (called automatically on every background save)  #
     # ------------------------------------------------------------------ #
-    def export_graph(self, dataset: dl.Dataset) -> dl.Item:
-        G = self._load_graph(dataset)
-        if G.number_of_nodes() == 0:
-            logger.warning("No graph data in dataset")
-            return None
-        return self._visualize_and_upload(G, dataset)
-
     def _visualize_and_upload(
         self, G: nx.DiGraph, dataset: dl.Dataset,
     ) -> dl.Item:
