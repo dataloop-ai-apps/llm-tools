@@ -467,9 +467,11 @@ class ServiceRunner(dl.BaseServiceRunner):
             os.remove(tmp.name)
 
         prompt_item = dl.PromptItem.from_item(item)
+        existing = prompt_item.prompts[-1].metadata.get("nearestItems", [])
+        existing.append(context_item.id)
         prompt_item.prompts[-1].add_element(
             mimetype=dl.PromptType.METADATA,
-            value={"nearestItems": [context_item.id]},
+            value={"nearestItems": existing},
         )
         prompt_item.update()
         return item
