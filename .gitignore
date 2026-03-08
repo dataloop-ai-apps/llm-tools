@@ -339,3 +339,4 @@ repos
 
 *.pem
 *service-account.json
+.vscode

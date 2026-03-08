@@ -129,7 +129,22 @@ Edge types:
 
 Retrieves relevant sub-graph context and adds it to the prompt item.
 
-**Two query modes:**
+#### Query resolution — structured and keyword are additive
+
+The function supports two query mechanisms that **run together** when both are
+applicable.  Results are merged with deduplication so the same edge or chunk
+never appears twice.
+
+| Scenario | What runs |
+|---|---|
+| Only structured filters set (no user message) | Structured query only |
+| Only user message (no filters) | Keyword query only |
+| **Both** filters + user message | Structured first, then keyword — results merged |
+| Neither | Warning logged, item returned unchanged |
+
+This means a pipeline can set fixed structural filters (e.g. `relationship="WEARS"`)
+and still benefit from additional keyword matches derived from the user's natural
+language question.
 
 #### Structured mode (Cypher-like)
 
@@ -143,9 +158,29 @@ WHERE source.label =~ entity_name
 RETURN *
 ```
 
+The graph is **directed**, so `entity_name` and `target_name` filter different
+sides of each edge:
+
+- `entity_name` — filters the **source** node (left side of the arrow).
+- `target_name` — filters the **target** node (right side of the arrow).
+
+For example, given these edges in the graph:
+
+```
+(Worker)-[:WEARS]->(Hard Hat)
+(Manager)-[:INSPECTS]->(Hard Hat)
+(Worker)-[:OPERATES]->(Forklift)
+```
+
+| Filter | Matched edges |
+|---|---|
+| `entity_name="worker"` | WEARS + OPERATES (both **from** Worker) |
+| `target_name="hard hat"` | WEARS + INSPECTS (both **to** Hard Hat) |
+| `entity_name="worker", target_name="hard hat"` | WEARS only (Worker → Hard Hat) |
+
 Wildcard `*` is supported — `warehouse*` matches `Warehouse A`, `Warehouse B`, etc.
 
-**Examples:**
+**Cypher equivalents:**
 
 | Cypher equivalent | Parameters |
 |---|---|
@@ -153,11 +188,10 @@ Wildcard `*` is supported — `warehouse*` matches `Warehouse A`, `Warehouse B`,
 | `MATCH (p)-[r:WEARS]->(i) WHERE p.id='worker'` | `entity_name="worker", relationship="WEARS"` |
 | `MATCH (p)-[r:LOCATED_IN]->(i) WHERE i.id=~'warehouse.*'` | `relationship="LOCATED_IN", target_name="warehouse*"` |
 
-#### Keyword mode (natural language — default)
+#### Keyword mode (natural language)
 
-When no structured parameters are provided, the last user message is extracted
-from the prompt item.  Keywords are derived (stop words removed) and matched
-against:
+The last user message is extracted from the prompt item.  Keywords are derived
+(stop words removed) and matched against:
 
 - **Entity labels** — substring match (e.g. keyword `worker` matches entity `Worker`).
 - **Relationship types** — word-level match (e.g. keyword `wear` matches edge
@@ -214,15 +248,15 @@ The uploaded context item also carries **metadata** with full provenance:
 }
 ```
 
-The context item ID is added to the prompt as a `nearestItems` metadata element
-so the next LLM node in the pipeline can consume it.
+The context item ID is **appended** to existing `nearestItems` on the prompt
+(not overwritten), so other pipeline nodes (e.g. vector retriever) can also
+contribute context items.
 
-### 3. Export Graph
+### 3. Graph Visualization
 
-**Function:** `export_graph(dataset) -> item`
-
-Renders the full knowledge graph as a PNG image and uploads it to the dataset
-under `/graph_rag/knowledge_graph.png`.
+The knowledge graph is automatically rendered as a PNG image
+(`knowledge_graph.png`) and uploaded alongside the graph JSON every time the
+background saver flushes a dirty graph.  No separate pipeline node is needed.
 
 Nodes are colour-coded by entity type:
 
@@ -246,14 +280,28 @@ drawn as solid dark arrows with labels.
 ## Graph persistence
 
 The graph is stored as a single **NetworkX node-link JSON** file
-(`knowledge_graph.json`) in the dataset under `/graph_rag/`.
+(`knowledge_graph.json`) in each dataset under `/graph_rag/`.
 
-- **Load:** on every function call the graph is downloaded from the dataset.
-- **Save:** after every `add_chunk_to_graph` call the entire graph is
-  re-serialised and re-uploaded (overwrite).
+### In-memory caching
 
-This is a simple persistence model suited for small-to-medium graphs.
-See [Limitations](#limitations) for scaling considerations.
+On **service init**, all existing graphs across the project's datasets are
+downloaded and loaded into memory.  Both `add_chunk_to_graph` and `query_graph`
+operate on these in-memory graphs — no download per execution.
+
+### Background saver
+
+A daemon thread runs in the background (started at init) and flushes **dirty**
+graphs to the platform every 5 minutes.  A graph is marked dirty whenever
+`add_chunk_to_graph` modifies it.  The flush also uploads an updated
+visualization PNG.
+
+Thread safety is handled with per-dataset locks, and a double-checked locking
+pattern ensures only genuinely dirty graphs are uploaded.
+
+### Per-dataset isolation
+
+Each dataset maintains its own independent graph.  The service manages all of
+them simultaneously, keyed by `dataset.id`.
 
 ---
 
@@ -292,14 +340,15 @@ within the Dataloop dataset as a JSON artifact.
 ## Limitations
 
 ### Scale
-The entire graph is loaded into memory on every call and re-uploaded after every
-write.  This works well for graphs up to ~50K nodes.  Beyond that, consider
-migrating to a persistent graph database (e.g. Neo4j AuraDB).
+All graphs are held in memory for the lifetime of the service.  This works well
+for graphs up to ~50K nodes per dataset.  Beyond that, consider migrating to a
+persistent graph database (e.g. Neo4j AuraDB).
 
 ### Concurrency
-The service runs with `concurrency: 1` and `maxReplicas: 1`.  Concurrent writes
-would cause last-write-wins conflicts because the graph is a single JSON file.
-If you need parallel ingestion, use a queue or batch chunks sequentially.
+The service supports concurrent executions with thread-safe, per-dataset locks.
+However, only one service instance (`maxReplicas: 1`) should run to avoid
+split-brain conflicts on the same graph JSON file.  If you need horizontal
+scaling, consider partitioning by dataset across instances.
 
 ### Single edge per node pair
 NetworkX `DiGraph` allows only one edge between any two nodes.  If the same two

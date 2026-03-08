@@ -4,7 +4,8 @@ USER 1000
 ENV HOME=/tmp
 RUN pip install networkx \
     matplotlib \
-    textwrap3
+    textwrap3 \
+    json_repair
 
 
 # docker build -t gcr.io/viewo-g/piper/agent/runner/apps/graph-rag:0.0.11 -f Dockerfile .

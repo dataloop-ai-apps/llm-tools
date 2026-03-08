@@ -11,6 +11,7 @@ import re
 import os
 import tempfile
 import threading
+import json_repair
 from datetime import datetime
 
 logger = logging.getLogger("[GRAPH-RAG]")
@@ -128,32 +129,64 @@ STOP_WORDS = {
 
 class ServiceRunner(dl.BaseServiceRunner):
 
-    def __init__(self):
+    def __init__(self, project_id: dl.Project=None):
         super().__init__()
         self._graphs: dict[str, nx.DiGraph] = {}
         self._dirty: dict[str, bool] = {}
         self._datasets: dict[str, dl.Dataset] = {}
+        self.graph_filename = GRAPH_FILENAME
+        self.graph_path = GRAPH_PATH
         self._lock = threading.Lock()
+
+        if project_id is not None:
+            self.project = dl.projects.get(project_id=project_id)
+        else:
+            self.project = self.service_entity.project
+        
+        self._load_all_graphs(self.project)
 
         self._stop_event = threading.Event()
         self._saver_thread = threading.Thread(
             target=self._background_saver, daemon=True,
         )
         self._saver_thread.start()
-        logger.info("Graph-RAG service initialised, background saver started")
+        logger.info(
+            f"Graph-RAG service initialised — "
+            f"{len(self._graphs)} graphs loaded, background saver started"
+        )
+        
 
     # ------------------------------------------------------------------ #
     #  Per-dataset graph cache                                             #
     # ------------------------------------------------------------------ #
+    def _load_all_graphs(self, project: dl.Project):
+        """Download graphs for every dataset in the project at init time."""
+        for dataset in project.datasets.list():
+            G = self._download_graph(dataset)
+            self._graphs[dataset.id] = G
+            self._dirty[dataset.id] = False
+            self._datasets[dataset.id] = dataset
+            logger.info(
+                f"Init: loaded graph for dataset {dataset.name!r} ({dataset.id}) "
+                f"— {G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
+            )
+
     def _get_graph(self, dataset: dl.Dataset) -> nx.DiGraph:
-        """Return the in-memory graph for *dataset*, loading on first access."""
+        """
+        Return the in-memory graph for *dataset*.
+
+        All graphs are pre-loaded at init. If a new dataset appears at
+        runtime (created after the service started), it is loaded lazily.
+        """
         ds_id = dataset.id
         if ds_id not in self._graphs:
             with self._lock:
+                # re-check after acquiring lock
                 if ds_id not in self._graphs:
                     self._graphs[ds_id] = self._download_graph(dataset)
                     self._dirty[ds_id] = False
                     self._datasets[ds_id] = dataset
+                    logger.info(f"Lazy-loaded graph for new dataset {dataset.id}")
         return self._graphs[ds_id]
 
     def _mark_dirty(self, dataset_id: str):
@@ -193,23 +226,22 @@ class ServiceRunner(dl.BaseServiceRunner):
     #  Graph download / upload helpers                                     #
     # ------------------------------------------------------------------ #
     def _download_graph(self, dataset: dl.Dataset) -> nx.DiGraph:
-        try:
-            filters = dl.Filters()
-            filters.add(field="name", values=self.GRAPH_FILENAME)
-            filters.add(field="dir", values=GRAPH_PATH)
-            pages = dataset.items.list(filters=filters)
-            for graph_item in pages.all():
-                buf = graph_item.download(save_locally=False)
-                data = json.loads(buf.read().decode("utf-8"))
-                G = nx.node_link_graph(data)
-                logger.info(
-                    f"Loaded graph for dataset {dataset.id}: "
-                    f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
-                )
-                return G
-        except Exception as e:
-            logger.info(f"No existing graph for dataset {dataset.id} ({e}), creating new")
-        return nx.DiGraph()
+
+        filters = dl.Filters()
+        filters.add(field="filename", values= f"{self.graph_path}/{self.graph_filename}")
+        pages = dataset.items.list(filters=filters)
+        graph = nx.DiGraph() # Empty graph to start with or if no graph is found
+        for graph_item in pages.all():
+            buf = graph_item.download(save_locally=False)
+            data = json.loads(buf.read().decode("utf-8"))
+            G = nx.node_link_graph(data)
+            logger.info(
+                f"Loaded graph for dataset {dataset.id}: "
+                f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
+            )
+            graph = G
+        
+        return graph
 
     def _upload_graph(self, G: nx.DiGraph, dataset: dl.Dataset) -> dl.Item:
         data = nx.node_link_data(G)
@@ -225,8 +257,8 @@ class ServiceRunner(dl.BaseServiceRunner):
             tmp.close()
             return dataset.items.upload(
                 local_path=tmp.name,
-                remote_name=self.GRAPH_FILENAME,
-                remote_path=GRAPH_PATH,
+                remote_name=self.graph_filename,
+                remote_path=self.graph_path,
                 overwrite=True,
                 item_metadata={
                     "user": {
@@ -257,9 +289,13 @@ class ServiceRunner(dl.BaseServiceRunner):
         item_id: str,
         entities: list[dict],
         relationships: list[dict],
+        store_text: bool = True,
     ):
         chunk_node = f"Chunk:{chunk_name}"
-        G.add_node(chunk_node, type="chunk", text=text, item_id=item_id)
+        node_attrs = {"type": "chunk", "item_id": item_id}
+        if store_text:
+            node_attrs["text"] = text
+        G.add_node(chunk_node, **node_attrs)
 
         entity_map: dict[str, str] = {}
         for ent in entities:
@@ -292,7 +328,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     # ------------------------------------------------------------------ #
     #  1. Build graph — incremental, one item at a time                   #
     # ------------------------------------------------------------------ #
-    def add_chunk_to_graph(self, item: dl.Item) -> dl.Item:
+    def add_chunk_to_graph(self, item: dl.Item, store_text: bool = True) -> dl.Item:
         """
         Pipeline node — accepts one of:
 
@@ -303,8 +339,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         • **JSON item** (.json) with the structured schema:
           {chunk_name, text, entities[], relationships[]}
 
-        Raises ValueError for unsupported item formats.
-        A single graph is maintained per dataset.
+        When *store_text* is False the source passage is not stored on the
+        chunk node, keeping the graph lean.  The ``item_id`` is always
+        stored so text can be fetched on demand.
         """
         chunk_name, text, entities, relationships = self._parse_item(item)
 
@@ -312,7 +349,10 @@ class ServiceRunner(dl.BaseServiceRunner):
         G = self._get_graph(dataset)
 
         with self._lock:
-            self._merge_into_graph(G, chunk_name, text, item.id, entities, relationships)
+            self._merge_into_graph(
+                G, chunk_name, text, item.id, entities, relationships,
+                store_text=store_text,
+            )
             self._mark_dirty(dataset.id)
 
         logger.info(
@@ -321,14 +361,6 @@ class ServiceRunner(dl.BaseServiceRunner):
         )
         return item
 
-    @staticmethod
-    def _is_prompt_item(item: dl.Item) -> bool:
-        return (
-            item.metadata.get("system", {})
-            .get("shebang", {})
-            .get("dltype")
-            == "prompt"
-        )  # TODO: IF JSON - WHETER A PRPMOT, NO NEEED FOR THIS FUNCTION
 
     @staticmethod
     def _parse_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]:
@@ -337,21 +369,25 @@ class ServiceRunner(dl.BaseServiceRunner):
         Supports prompt items and structured JSON items only.
         Raises ValueError for any other format.
         """
-        if ServiceRunner._is_prompt_item(item):
-            return ServiceRunner._parse_prompt_item(item)
-
         mimetype = item.metadata.get("system", {}).get("mimetype", "")
-        if mimetype.startswith("application/json") or item.name.endswith(".json"): #TODO: change this one
-            return ServiceRunner._parse_json_item(item)
+        if mimetype != "application/json":
+            raise ValueError(f"Unsupported item format for '{item.name}' (mimetype={mimetype}). Expected a Prompt item or a structured .json file.")
+        
+        parsed_item = (None, None, [], [])
+        if item.metadata.get("system", {}).get("shebang", {}).get("dltype") == "prompt":
+            parsed_item = ServiceRunner._parse_prompt_item(item)
+        else:
+            parsed_item = ServiceRunner._parse_json_item(item)
 
-        raise ValueError(
-            f"Unsupported item format for '{item.name}' (mimetype={mimetype}). "
-            f"Expected a prompt item or a .json file."
-        )
+        return parsed_item
 
     @staticmethod
     def _parse_prompt_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]:
-        """Parse a prompt item — user message = text, assistant message = guided JSON."""
+        """Parse a prompt item — 
+        user message = text, 
+        assistant message = guided JSON.
+        Returns (chunk_name, text, entities, relationships)."""
+        
         prompt_item = dl.PromptItem.from_item(item)
         messages = prompt_item.to_messages()
 
@@ -372,32 +408,18 @@ class ServiceRunner(dl.BaseServiceRunner):
             raise ValueError(
                 f"Prompt item '{item.name}' has no assistant response to extract."
             )
-        # TODO: EITHER 
 
-        data = ServiceRunner._extract_json(assistant_raw)
+        repaired_json = json_repair.repair_json(assistant_raw) # Extract JSON from a raw LLM response
+        data = json.loads(repaired_json)
         entities, relationships = ServiceRunner._split_entities_and_relationships(data)
-        return (
+        result = (
             item.name,
             user_text,
             entities,
             relationships,
-        ) # todo: do inned this?
-
-    @staticmethod
-    def _extract_json(text: str): #todo: check if there is a function for it
-        """Extract JSON from a raw LLM response, stripping markdown fences and surrounding text."""
-        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
-        if fence_match:
-            text = fence_match.group(1).strip()
-
-        for start in range(len(text)):
-            if text[start] in ("{", "["):
-                bracket = "}" if text[start] == "{" else "]"
-                for end in range(len(text) - 1, start - 1, -1):
-                    if text[end] == bracket:
-                        return json.loads(text[start:end + 1])
-
-        raise ValueError("No valid JSON found in LLM response.")
+        )
+        
+        return result
 
     @staticmethod
     def _split_entities_and_relationships(data) -> tuple[list[dict], list[dict]]:
@@ -405,10 +427,12 @@ class ServiceRunner(dl.BaseServiceRunner):
         Handle both structured {entities, relationships} and flat-array
         formats where entities and relationships are mixed in one list.
         """
+        result = ([], [])
+        
         if isinstance(data, dict):
-            return data.get("entities", []), data.get("relationships", [])
+            result = data.get("entities", []), data.get("relationships", [])
 
-        if isinstance(data, list):
+        elif isinstance(data, list):
             entities = []
             relationships = []
             for obj in data:
@@ -416,9 +440,12 @@ class ServiceRunner(dl.BaseServiceRunner):
                     relationships.append(obj)
                 elif "name" in obj:
                     entities.append(obj)
-            return entities, relationships
+            result = entities, relationships
 
-        raise ValueError(f"Unexpected JSON type: {type(data).__name__}")
+        else:
+            raise ValueError(f"Unsupported JSON format: {type(data).__name__}. Expected a dictionary or a list.")
+        
+        return result
 
     @staticmethod
     def _parse_json_item(item: dl.Item) -> tuple[str, str, list[dict], list[dict]]: 
@@ -427,15 +454,18 @@ class ServiceRunner(dl.BaseServiceRunner):
         raw = buf.read().decode("utf-8", errors="replace").strip()
         if not raw:
             raise ValueError(f"JSON item '{item.name}' is empty.")
-
+        
         data = json.loads(raw)
-        return (
+        
+        result = (
             data.get("chunk_name", item.name),
             data.get("text", ""),
             data.get("entities", []),
             data.get("relationships", []),
         )
-        # TODO: 1 RETURN
+        
+        return result
+
 
     # ------------------------------------------------------------------ #
     #  2. Retrieve from graph — structured + keyword query                 #
@@ -450,94 +480,105 @@ class ServiceRunner(dl.BaseServiceRunner):
         hops: int = 2,
     ) -> dl.Item:
         """
-        Pipeline node — receives a prompt item, searches the dataset
-        knowledge graph, and adds retrieved context to the prompt.
+        Pipeline node — searches the dataset knowledge graph and adds
+        retrieved context to the prompt item.
 
-        Supports two modes:
+        Query resolution (filters and keyword are **additive**):
 
-        **Structured** (Cypher-like) — when any of ``entity_name``,
-        ``relationship``, or ``target_name`` are provided, edges are
-        filtered precisely, equivalent to::
+        1. If ``entity_name``, ``relationship``, or ``target_name`` are
+           provided, a **structured** (Cypher-like) traversal runs first.
+        2. If the prompt item contains a user message, a **keyword**
+           query also runs, extracting keywords and matching them
+           against entity labels and relationship types.
+        3. Results from both are **merged with deduplication** — the
+           structured query gives precise hits, the keyword query
+           adds extra relevant context from the user's natural language.
 
-            MATCH (source)-[r:RELATIONSHIP]->(target)
-            WHERE source.label =~ entity_name
-              AND target.label =~ target_name
+        If only filters are set (no user message), only structured runs.
+        If only a user message exists (no filters), only keyword runs.
 
-        ``*`` wildcards are supported (e.g. ``warehouse*``).
-
-        **Keyword** (default) — extracts keywords from the user message
-        and matches both entity labels *and* relationship types.
-
-        In both modes the matched sub-graph is expanded via BFS up to
-        ``hops`` levels to collect source chunk texts.
+        Matched sub-graphs are expanded via BFS up to ``hops`` levels
+        to collect source chunk texts.
         """
         query_text = self._extract_query_from_prompt(item)
+        matched_edges: list[tuple] = []
+        chunks: list[dict] = []
 
-        G = self._load_graph(dataset)
-        if G.number_of_nodes() == 0:
+        G = self._get_graph(dataset)
+        has_graph = G.number_of_nodes() > 0
+        has_filters = bool(entity_name or relationship or target_name)
+
+        if not has_graph:
             logger.warning("No graph data available in this dataset.")
-            return item
-
-        if entity_name or relationship or target_name:
-            matched_edges, chunks = self._structured_query(
-                G, entity_name, relationship, target_name, hops,
-            )
-            logger.info(
-                f"Structured query (entity={entity_name}, rel={relationship}, "
-                f"target={target_name}) -> {len(matched_edges)} edges, "
-                f"{len(chunks)} chunks"
-            )
+        elif not has_filters and not query_text:
+            logger.warning(f"No query text or filters for prompt item {item.id}")
         else:
-            if not query_text:
-                logger.warning(f"No user message in prompt item {item.id}")
-                return item 
-            matched_edges, chunks = self._keyword_query(
-                G, query_text, hops,
+            # Structured and keyword queries are additive — both run
+            # when both are available; results are deduplicated below.
+            if has_filters:
+                matched_edges, chunks = self._structured_query(
+                    G, entity_name, relationship, target_name, hops,
+                )
+            if query_text:
+                kw_edges, kw_chunks = self._keyword_query(
+                    G, query_text, hops,
+                )
+                # Merge keyword results, skipping duplicates already
+                # found by the structured query.
+                seen_edges = {(u, v) for u, v, _ in matched_edges}
+                matched_edges += [(u, v, d) for u, v, d in kw_edges if (u, v) not in seen_edges]
+                seen_ids = {c["node_id"] for c in chunks}
+                chunks += [c for c in kw_chunks if c["node_id"] not in seen_ids]
+
+        # Build context and attach to prompt only when we have results.
+        if matched_edges or chunks:
+            context = self._build_context(
+                G, matched_edges, chunks,
             )
-
-        if not matched_edges and not chunks:
-            return item
-
-        context = self._build_context(
-            G, query_text or "structured query", matched_edges, chunks,
-        )
-
-        source_items = [
-            {"item_id": c["item_id"], "name": c["name"]}
-            for c in chunks if c.get("item_id")
-        ]
-
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8",
-        )
-        try:
-            tmp.write(context)
-            tmp.close()
-            context_item = dataset.items.upload(
-                local_path=tmp.name,
-                remote_name=f"context-{item.name}--{datetime.now().strftime('%Y%m%d%H%M%S')}.txt",
-                remote_path=item.dir,
-                overwrite=True,
-                item_metadata={
-                    "user": {
-                        "type": "graph_rag_context",
-                        "source_query": query_text or "",
-                        "num_triples": len(matched_edges),
-                        "num_source_chunks": len(chunks),
-                        "source_chunks": source_items,
-                    }
-                },
+            source_items = [
+                {"item_id": c["item_id"], "name": c["name"]}
+                for c in chunks if c.get("item_id")
+            ]
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False, encoding="utf-8",
             )
-        finally:
-            os.remove(tmp.name)
+            try:
+                tmp.write(context)
+                tmp.close()
+                context_item = dataset.items.upload(
+                    local_path=tmp.name,
+                    remote_name=f"context-{item.name}--{datetime.now().strftime('%Y%m%d%H%M%S')}.txt",
+                    remote_path=item.dir,
+                    overwrite=True,
+                    item_metadata={
+                        "user": {
+                            "type": "graph_rag_context",
+                            "source_query": query_text or "",
+                            "num_triples": len(matched_edges),
+                            "num_source_chunks": len(chunks),
+                            "source_chunks": source_items,
+                        }
+                    },
+                )
+            finally:
+                os.remove(tmp.name)
 
-        prompt_item = dl.PromptItem.from_item(item)
-        prompt_item.prompts[-1].add_element(
-            mimetype=dl.PromptType.METADATA,
-            value={"nearestItems": [context_item.id]},
-        )
-        prompt_item.update()
-        return item
+            # Append to existing nearestItems so other pipeline nodes
+            # (e.g. vector retriever) aren't overwritten.
+            logger.info(f"Appending context item {context_item.id} to nearest items")
+            prompt_item = dl.PromptItem.from_item(item)
+            existing = prompt_item.prompts[-1].metadata.get("nearestItems", [])
+            if existing:
+                existing.append(context_item.id)
+            else:
+                existing = [context_item.id]
+            prompt_item.prompts[-1].add_element(
+                mimetype=dl.PromptType.METADATA,
+                value={"nearestItems": existing},
+                )
+            prompt_item.update()
+
+        return item # Returns the prompt item with the nearest items appended
 
     # ------------------------------------------------------------------ #
     #  Structured query — Cypher-like filtering                            #
@@ -587,7 +628,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         return matched_edges, chunks
 
     # ------------------------------------------------------------------ #
-    #  Keyword query — NL fallback with relationship-type awareness        #
+    #  Keyword query — Natural Language with relationship-type awareness        #
     # ------------------------------------------------------------------ #
     def _keyword_query(
         self,
@@ -604,6 +645,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.info(f"No usable keywords in query: {query_text}")
             return [], []
 
+        # Find all nodes that match the keywords
         matched_nodes: set[str] = set()
         for nid, d in G.nodes(data=True):
             if d.get("type") == "chunk":
@@ -612,6 +654,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             if any(kw in label for kw in keywords):
                 matched_nodes.add(nid)
 
+        # Find all relationships that match the keywords
         matched_rels: set[str] = set()
         for _, _, d in G.edges(data=True):
             rel = d.get("label", "")
@@ -626,6 +669,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             f"{len(matched_rels)} relationship types ({matched_rels or 'all'})"
         )
 
+        # Find all edges that match the keywords
         matched_edges: list[tuple] = []
         seed_nodes: set[str] = set()
         for u, v, d in G.edges(data=True):
@@ -640,13 +684,14 @@ class ServiceRunner(dl.BaseServiceRunner):
             seed_nodes.update({u, v})
 
         chunks = self._collect_chunks_bfs(G, seed_nodes, hops)
+        
         return matched_edges, chunks
 
     # ------------------------------------------------------------------ #
     #  BFS chunk collector                                                 #
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _collect_chunks_bfs( # TODO : WHETER THERE IS A FUNCTION TO BFS
+    def _collect_chunks_bfs(
         G: nx.DiGraph, seed_nodes: set[str], max_hops: int,
     ) -> list[dict]:
         """
@@ -699,7 +744,6 @@ class ServiceRunner(dl.BaseServiceRunner):
     @staticmethod
     def _build_context(
         G: nx.DiGraph,
-        query: str,
         edges: list[tuple],
         chunks: list[dict],
     ) -> str:
@@ -711,8 +755,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         - Source passages with provenance (chunk name / item ID)
         """
         lines = [
-            "=== Graph-RAG Context ===",
-            f"User query: {query}",
+            "=== Graph-RAG Context ==="
         ]
 
         # -- Typed triples grouped by source entity --
@@ -751,13 +794,13 @@ class ServiceRunner(dl.BaseServiceRunner):
             for i, chunk in enumerate(chunks[:10], 1):
                 name = chunk.get("name", "unknown")
                 item_id = chunk.get("item_id", "")
-                text = chunk.get("text", "")[:500]
+                # text = chunk.get("text", "")[:500]
                 ref = f"source={name}"
                 if item_id:
                     ref += f", item_id={item_id}"
                 lines.append(f"  [{i}] ({ref})")
-                if text:
-                    lines.append(f"      {text}")
+                # if text:
+                #     lines.append(f"      {text}")
 
         lines.append("=== End Context ===")
         return "\n".join(lines)
@@ -765,21 +808,29 @@ class ServiceRunner(dl.BaseServiceRunner):
     @staticmethod
     def _extract_query_from_prompt(item: dl.Item) -> str:
         """Extract the last user message text from a Dataloop PromptItem."""
+        result = ""
         prompt_item = dl.PromptItem.from_item(item)
         messages = prompt_item.to_messages(include_assistant=False)
         if not messages:
-            return ""
-        last_message = messages[-1]
-        content = last_message.get("content", [])
-        if not content:
-            return ""
-        return content[0].get("text", "")
+            logger.info(f"No messages in prompt item {item.id}")
+            result = ""
+        else:
+            last_message = messages[-1]
+            content = last_message.get("content", [])
+            if not content:
+                logger.info(f"No content in last message of prompt item {item.id}")
+                result = ""
+            else:
+                result = content[0].get("text", "")
+        
+        return result
 
     @staticmethod
     def _extract_keywords(query: str) -> set[str]:
         """Extract meaningful keywords from a query, filtering stop words."""
         words = re.findall(r"[a-zA-Z0-9]+", query.lower())
-        return {w for w in words if len(w) > 2 and w not in STOP_WORDS}
+        result = {w for w in words if len(w) > 2 and w not in STOP_WORDS}
+        return result
 
     # ------------------------------------------------------------------ #
     #  Visualize & upload (called automatically on every background save)  #
@@ -897,4 +948,3 @@ class ServiceRunner(dl.BaseServiceRunner):
         finally:
             os.remove(local_path)
         return uploaded
-
