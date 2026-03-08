@@ -483,19 +483,20 @@ class ServiceRunner(dl.BaseServiceRunner):
         Pipeline node — searches the dataset knowledge graph and adds
         retrieved context to the prompt item.
 
-        Query resolution (filters and keyword are **additive**):
+        Query resolution (filters narrow, keyword searches within):
 
         1. If ``entity_name``, ``relationship``, or ``target_name`` are
-           provided, a **structured** (Cypher-like) traversal runs first.
-        2. If the prompt item contains a user message, a **keyword**
-           query also runs, extracting keywords and matching them
-           against entity labels and relationship types.
-        3. Results from both are **merged with deduplication** — the
-           structured query gives precise hits, the keyword query
-           adds extra relevant context from the user's natural language.
+           provided, a **structured** (Cypher-like) traversal runs first
+           to narrow the graph to a matching subgraph.
+        2. If the prompt item also contains a user message, a **keyword**
+           query runs *within* that filtered subgraph — so the keyword
+           search is scoped to the portion of the graph that matched
+           the structural filters.
+        3. If no filters are set, the keyword query searches the full
+           graph.
 
-        If only filters are set (no user message), only structured runs.
-        If only a user message exists (no filters), only keyword runs.
+        This mirrors the retriever pattern: filters define the scope,
+        the natural-language query searches within it.
 
         Matched sub-graphs are expanded via BFS up to ``hops`` levels
         to collect source chunk texts.
@@ -513,22 +514,34 @@ class ServiceRunner(dl.BaseServiceRunner):
         elif not has_filters and not query_text:
             logger.warning(f"No query text or filters for prompt item {item.id}")
         else:
-            # Structured and keyword queries are additive — both run
-            # when both are available; results are deduplicated below.
             if has_filters:
-                matched_edges, chunks = self._structured_query(
+                # Filters narrow the search scope — build a subgraph
+                # from the structural matches so the keyword query
+                # only searches within the filtered portion.
+                matched_edges, chunks = self._pattern_match(
                     G, entity_name, relationship, target_name, hops,
                 )
+            search_graph = G
+            if has_filters and matched_edges:
+                subgraph_nodes = set()
+                for u, v, _ in matched_edges:
+                    subgraph_nodes.update({u, v})
+                for c in chunks:
+                    subgraph_nodes.add(c["node_id"])
+                search_graph = G.subgraph(subgraph_nodes)
             if query_text:
-                kw_edges, kw_chunks = self._keyword_query(
-                    G, query_text, hops,
+                kw_edges, kw_chunks = self._local_search(
+                    search_graph, query_text, hops,
                 )
-                # Merge keyword results, skipping duplicates already
-                # found by the structured query.
-                seen_edges = {(u, v) for u, v, _ in matched_edges}
-                matched_edges += [(u, v, d) for u, v, d in kw_edges if (u, v) not in seen_edges]
-                seen_ids = {c["node_id"] for c in chunks}
-                chunks += [c for c in kw_chunks if c["node_id"] not in seen_ids]
+                if has_filters:
+                    # Keyword refines within the filtered subgraph —
+                    # replace the broad structural results with the
+                    # narrower keyword matches.
+                    matched_edges = kw_edges
+                    chunks = kw_chunks
+                else:
+                    matched_edges = kw_edges
+                    chunks = kw_chunks
 
         # Build context and attach to prompt only when we have results.
         if matched_edges or chunks:
@@ -581,10 +594,10 @@ class ServiceRunner(dl.BaseServiceRunner):
         return item # Returns the prompt item with the nearest items appended
 
     # ------------------------------------------------------------------ #
-    #  Structured query — Cypher-like filtering                            #
+    #  Pattern Match — Cypher-like filtering                               #
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _structured_query(
+    def _pattern_match(
         G: nx.DiGraph,
         entity_name: str = None,
         relationship: str = None,
@@ -628,9 +641,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         return matched_edges, chunks
 
     # ------------------------------------------------------------------ #
-    #  Keyword query — Natural Language with relationship-type awareness        #
+    #  Local Search — entity + relationship keyword matching                 #
     # ------------------------------------------------------------------ #
-    def _keyword_query(
+    def _local_search(
         self,
         G: nx.DiGraph,
         query_text: str,

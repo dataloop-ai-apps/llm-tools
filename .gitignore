@@ -340,3 +340,4 @@ repos
 *.pem
 *service-account.json
 .vscode
+graph_rag/research/

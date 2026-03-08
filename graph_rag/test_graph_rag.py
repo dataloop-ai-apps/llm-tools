@@ -192,79 +192,79 @@ class TestMergeIntoGraph(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
-#  Tests — Structured query                                            #
+#  Tests — Pattern Match                                            #
 # ------------------------------------------------------------------ #
 
-class TestStructuredQuery(unittest.TestCase):
+class TestPatternMatch(unittest.TestCase):
     def setUp(self):
         self.G = _build_sample_graph()
 
     def test_filter_by_relationship(self):
-        edges, chunks = ServiceRunner._structured_query(self.G, relationship="WEARS")
+        edges, chunks = ServiceRunner._pattern_match(self.G, relationship="WEARS")
         labels = [d["label"] for _, _, d in edges]
         self.assertTrue(all(l == "WEARS" for l in labels))
         self.assertGreater(len(edges), 0)
 
     def test_filter_by_entity_name(self):
-        edges, _ = ServiceRunner._structured_query(self.G, entity_name="worker")
+        edges, _ = ServiceRunner._pattern_match(self.G, entity_name="worker")
         sources = {u for u, _, _ in edges}
         self.assertTrue(all("Worker" in s for s in sources))
 
     def test_filter_by_target_name(self):
-        edges, _ = ServiceRunner._structured_query(self.G, target_name="hard hat")
+        edges, _ = ServiceRunner._pattern_match(self.G, target_name="hard hat")
         targets = {v for _, v, _ in edges}
         self.assertTrue(all("Hard Hat" in t for t in targets))
 
     def test_filter_entity_and_target(self):
-        edges, _ = ServiceRunner._structured_query(
+        edges, _ = ServiceRunner._pattern_match(
             self.G, entity_name="worker", target_name="hard hat",
         )
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0][2]["label"], "WEARS")
 
     def test_filter_entity_and_relationship(self):
-        edges, _ = ServiceRunner._structured_query(
+        edges, _ = ServiceRunner._pattern_match(
             self.G, entity_name="worker", relationship="OPERATES",
         )
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0][2]["label"], "OPERATES")
 
     def test_wildcard(self):
-        edges, _ = ServiceRunner._structured_query(self.G, entity_name="work*")
+        edges, _ = ServiceRunner._pattern_match(self.G, entity_name="work*")
         self.assertGreater(len(edges), 0)
 
     def test_no_match(self):
-        edges, chunks = ServiceRunner._structured_query(self.G, entity_name="nonexistent")
+        edges, chunks = ServiceRunner._pattern_match(self.G, entity_name="nonexistent")
         self.assertEqual(len(edges), 0)
         self.assertEqual(len(chunks), 0)
 
     def test_mentions_excluded(self):
-        edges, _ = ServiceRunner._structured_query(self.G)
+        edges, _ = ServiceRunner._pattern_match(self.G)
         labels = [d["label"] for _, _, d in edges]
         self.assertNotIn("MENTIONS", labels)
 
 
 # ------------------------------------------------------------------ #
-#  Tests — Keyword query                                               #
+#  Tests — Local Search                                               #
 # ------------------------------------------------------------------ #
 
-class TestKeywordQuery(unittest.TestCase):
+class TestLocalSearch(unittest.TestCase):
     def setUp(self):
         self.G = _build_sample_graph()
         self.runner = _make_runner_no_init()
 
     def test_keyword_worker(self):
-        edges, chunks = self.runner._keyword_query(self.G, "worker", hops=2)
+        edges, chunks = self.runner._local_search(self.G, "worker", hops=2)
         sources = {u for u, _, _ in edges}
         self.assertTrue(any("Worker" in s for s in sources))
 
     def test_keyword_wears(self):
-        edges, _ = self.runner._keyword_query(self.G, "what does the worker wear?", hops=2)
+        edges, _ = self.runner._local_search(self.G, "what does the worker wear?", hops=2)
         labels = {d["label"] for _, _, d in edges}
         self.assertIn("WEARS", labels)
 
     def test_no_keywords_returns_empty(self):
-        edges, chunks = self.runner._keyword_query(self.G, "the is a", hops=2)
+        edges, chunks = self.runner._local_search(self.G, "the is a", hops=2)
         self.assertEqual(edges, [])
         self.assertEqual(chunks, [])
 
@@ -306,7 +306,7 @@ class TestCollectChunksBfs(unittest.TestCase):
 # ------------------------------------------------------------------ #
 
 class TestBuildContext(unittest.TestCase):
-    def test_output_contains_triples_and_passages(self):
+    def test_output_contains_triples_and_provenance(self):
         G = _build_sample_graph()
         edges = [(
             "Person:Worker", "Equipment:Hard Hat",
@@ -321,7 +321,8 @@ class TestBuildContext(unittest.TestCase):
         ctx = ServiceRunner._build_context(G, edges, chunks)
         self.assertIn("Graph-RAG Context", ctx)
         self.assertIn("WEARS", ctx)
-        self.assertIn("Worker wears hard hat", ctx)
+        self.assertIn("source=c1", ctx)
+        self.assertIn("item_id=item1", ctx)
 
     def test_empty_input(self):
         G = nx.DiGraph()
@@ -396,8 +397,9 @@ class TestQueryGraphIntegration(unittest.TestCase):
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
     @patch("dtlpy.PromptItem")
     def test_combined_filters_and_keyword(self, mock_prompt_cls, mock_extract):
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("worker wears")
-        mock_extract.return_value = "worker wears"
+        """Pattern match narrows to Worker edges, local search refines by 'wears'."""
+        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("what does worker wear")
+        mock_extract.return_value = "what does worker wear"
 
         mock_pi = MagicMock()
         mock_pi.prompts = [MagicMock()]
@@ -406,7 +408,7 @@ class TestQueryGraphIntegration(unittest.TestCase):
 
         result = runner.query_graph(
             item=mock_item, dataset=mock_dataset,
-            entity_name="manager", relationship="INSPECTS",
+            entity_name="worker",
         )
         self.assertEqual(result, mock_item)
         mock_dataset.items.upload.assert_called_once()

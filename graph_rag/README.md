@@ -52,8 +52,9 @@ two can be combined in the same pipeline.
                                                       │
                    ┌──────────────┐          ┌────────▼────────┐
                    │  query_graph │<─────────│  User prompt    │
-                   │  (structured │          │  item           │
-                   │   or keyword)│          └─────────────────┘
+                   │  (pattern    │          │  item           │
+                   │   match /    │          └─────────────────┘
+                   │  local search│
                    └──────┬───────┘
                           │
                 ┌─────────▼──────────┐
@@ -129,24 +130,23 @@ Edge types:
 
 Retrieves relevant sub-graph context and adds it to the prompt item.
 
-#### Query resolution — structured and keyword are additive
+#### Query resolution — pattern match narrows, local search refines
 
-The function supports two query mechanisms that **run together** when both are
-applicable.  Results are merged with deduplication so the same edge or chunk
-never appears twice.
+The function supports two retrieval strategies that mirror standard GraphRAG
+patterns.  When both are applicable, filters narrow the graph first and local
+search runs within the filtered subgraph (same approach as `retriever.py`).
 
 | Scenario | What runs |
 |---|---|
-| Only structured filters set (no user message) | Structured query only |
-| Only user message (no filters) | Keyword query only |
-| **Both** filters + user message | Structured first, then keyword — results merged |
+| Only structural filters set (no user message) | Pattern match only |
+| Only user message (no filters) | Local search on full graph |
+| **Both** filters + user message | Pattern match narrows subgraph, local search within it |
 | Neither | Warning logged, item returned unchanged |
 
 This means a pipeline can set fixed structural filters (e.g. `relationship="WEARS"`)
-and still benefit from additional keyword matches derived from the user's natural
-language question.
+and the user's natural-language question will be searched within that filtered scope.
 
-#### Structured mode (Cypher-like)
+#### Pattern Match (Cypher-like)
 
 When any of `entity_name`, `relationship`, or `target_name` are provided, edges
 are filtered precisely.  This is equivalent to:
@@ -188,7 +188,7 @@ Wildcard `*` is supported — `warehouse*` matches `Warehouse A`, `Warehouse B`,
 | `MATCH (p)-[r:WEARS]->(i) WHERE p.id='worker'` | `entity_name="worker", relationship="WEARS"` |
 | `MATCH (p)-[r:LOCATED_IN]->(i) WHERE i.id=~'warehouse.*'` | `relationship="LOCATED_IN", target_name="warehouse*"` |
 
-#### Keyword mode (natural language)
+#### Local Search (natural language)
 
 The last user message is extracted from the prompt item.  Keywords are derived
 (stop words removed) and matched against:
@@ -356,8 +356,8 @@ entities have multiple relationship types (e.g. Worker WEARS Hard Hat *and*
 Worker OWNS Hard Hat), only the last one written is kept.  To support multiple
 edges, the graph would need to be migrated to `MultiDiGraph`.
 
-### Keyword matching
-The keyword query mode uses simple substring matching with stop-word removal.
+### Local search matching
+The local search mode uses simple substring matching with stop-word removal.
 It has no stemming (e.g. "wearing" won't match "WEARS"), no semantic similarity,
 and no fuzzy matching.  For production use, consider adding lemmatisation or
 embedding-based entity linking.
@@ -373,7 +373,7 @@ Graph quality depends entirely on the upstream LLM extraction.  Poor extraction
 retrieval.  The guided-JSON schema helps but does not guarantee perfect output.
 
 ### No embedding-based retrieval
-The query relies on keyword/structural matching only.  There is no vector
+The query relies on local search/pattern matching only.  There is no vector
 similarity over entity or relationship embeddings.  Combining Graph RAG with
 the existing vector `Retriever` in the same pipeline is recommended for best
 coverage.
