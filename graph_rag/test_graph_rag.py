@@ -2,20 +2,17 @@
 Unit tests for graph_rag.ServiceRunner.
 
 All Dataloop platform calls are mocked — these tests run fully offline
-and exercise the in-memory graph logic, query merging, BFS expansion,
+and exercise graph building, all 3 query modes, BFS expansion,
 background saver thread, and thread safety.
 """
 
-import io
 import json
 import threading
-import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import networkx as nx
 
-import graph_rag as module
 from graph_rag import ServiceRunner, STOP_WORDS
 
 
@@ -58,22 +55,23 @@ def _build_sample_graph() -> nx.DiGraph:
     return G
 
 
-def _make_runner_no_init(graph: nx.DiGraph = None, dataset_id: str = "ds1"):
+def _make_runner(graph: nx.DiGraph = None, dataset_id: str = "ds1"):
     """
     Create a ServiceRunner without calling __init__ (skip platform calls).
     Manually set up the in-memory state needed for tests.
     """
     runner = object.__new__(ServiceRunner)
     runner._graphs = {}
-    runner._dirty = {}
+    runner._was_updated = {}
     runner._datasets = {}
     runner._lock = threading.Lock()
     runner._stop_event = threading.Event()
-    runner.graph_filepath = "/graph_rag/knowledge_graph.json"
+    runner.graph_filename = "knowledge_graph.json"
+    runner.graph_path = "/graph_rag"
 
     if graph is not None:
         runner._graphs[dataset_id] = graph
-        runner._dirty[dataset_id] = False
+        runner._was_updated[dataset_id] = False
         mock_ds = MagicMock()
         mock_ds.id = dataset_id
         runner._datasets[dataset_id] = mock_ds
@@ -82,6 +80,14 @@ def _make_runner_no_init(graph: nx.DiGraph = None, dataset_id: str = "ds1"):
         target=runner._background_saver, daemon=True,
     )
     return runner
+
+
+def _make_prompt_mock():
+    """Create a mock PromptItem for query_graph tests."""
+    mock_pi = MagicMock()
+    mock_pi.prompts = [MagicMock()]
+    mock_pi.prompts[0].metadata = {}
+    return mock_pi
 
 
 # ------------------------------------------------------------------ #
@@ -142,7 +148,7 @@ class TestSplitEntitiesAndRelationships(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
-#  Tests — Merge into graph                                            #
+#  Tests — Build graph (add chunks)                                    #
 # ------------------------------------------------------------------ #
 
 class TestMergeIntoGraph(unittest.TestCase):
@@ -190,9 +196,29 @@ class TestMergeIntoGraph(unittest.TestCase):
         equip_nodes = [n for n in G if n.startswith("Equipment:")]
         self.assertEqual(len(equip_nodes), 1)
 
+    def test_incremental_add_multiple_chunks(self):
+        G = nx.DiGraph()
+        ServiceRunner._merge_into_graph(
+            G, "c1", "First chunk", "item1",
+            [{"name": "Worker", "type": "Person"}, {"name": "Hard Hat", "type": "Equipment"}],
+            [{"source": "Worker", "target": "Hard Hat", "relation": "WEARS"}],
+        )
+        ServiceRunner._merge_into_graph(
+            G, "c2", "Second chunk", "item2",
+            [{"name": "Worker", "type": "Person"}, {"name": "Forklift", "type": "Equipment"}],
+            [{"source": "Worker", "target": "Forklift", "relation": "OPERATES"}],
+        )
+        self.assertEqual(len([n for n in G if n.startswith("Chunk:")]), 2)
+        # Worker node is shared across chunks
+        self.assertTrue(G.has_edge("Person:Worker", "Equipment:Hard Hat"))
+        self.assertTrue(G.has_edge("Person:Worker", "Equipment:Forklift"))
+        # Both chunks mention Worker
+        self.assertTrue(G.has_edge("Chunk:c1", "Person:Worker"))
+        self.assertTrue(G.has_edge("Chunk:c2", "Person:Worker"))
+
 
 # ------------------------------------------------------------------ #
-#  Tests — Pattern Match                                            #
+#  Tests — Pattern Match                                               #
 # ------------------------------------------------------------------ #
 
 class TestPatternMatch(unittest.TestCase):
@@ -245,13 +271,13 @@ class TestPatternMatch(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
-#  Tests — Local Search                                               #
+#  Tests — Local Search                                                #
 # ------------------------------------------------------------------ #
 
 class TestLocalSearch(unittest.TestCase):
     def setUp(self):
         self.G = _build_sample_graph()
-        self.runner = _make_runner_no_init()
+        self.runner = _make_runner()
 
     def test_keyword_worker(self):
         edges, chunks = self.runner._local_search(self.G, "worker", hops=2)
@@ -331,120 +357,169 @@ class TestBuildContext(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ #
-#  Tests — Query graph (integration, mocked platform)                  #
+#  Tests — Build and Query (end-to-end with mocked platform)           #
 # ------------------------------------------------------------------ #
 
-class TestQueryGraphIntegration(unittest.TestCase):
+class TestBuildAndQuery(unittest.TestCase):
     """
-    Test the full query_graph flow with a real in-memory graph
-    but mocked Dataloop item/dataset/prompt operations.
+    End-to-end tests: build a graph by adding chunks, then query it
+    using all 3 modes (filters only, keyword only, filters + keyword).
+    Platform calls (upload, PromptItem) are mocked.
     """
 
-    def _make_mock_item(self, query_text: str):
+    def _build_graph_with_chunks(self):
+        """Add two chunks to an empty graph via _merge_into_graph."""
+        runner = _make_runner(graph=nx.DiGraph(), dataset_id="ds1")
+
+        G = runner._graphs["ds1"]
+        with runner._lock:
+            ServiceRunner._merge_into_graph(
+                G, "c1", "Worker wears hard hat and operates forklift.", "item1",
+                [
+                    {"name": "Worker", "type": "Person"},
+                    {"name": "Hard Hat", "type": "Equipment"},
+                    {"name": "Forklift", "type": "Equipment"},
+                ],
+                [
+                    {"source": "Worker", "target": "Hard Hat", "relation": "WEARS", "description": "protective headgear"},
+                    {"source": "Worker", "target": "Forklift", "relation": "OPERATES", "description": "floor vehicle"},
+                ],
+            )
+            ServiceRunner._merge_into_graph(
+                G, "c2", "Manager inspects hard hat.", "item2",
+                [
+                    {"name": "Manager", "type": "Person"},
+                    {"name": "Hard Hat", "type": "Equipment"},
+                ],
+                [
+                    {"source": "Manager", "target": "Hard Hat", "relation": "INSPECTS", "description": "safety check"},
+                ],
+            )
+            runner._was_updated["ds1"] = True
+
+        return runner
+
+    def _setup_query_mocks(self, runner, query_text):
         mock_item = MagicMock()
         mock_item.id = "prompt_item_1"
         mock_item.name = "prompt.json"
         mock_item.dir = "/"
-        mock_item.dataset = MagicMock()
-        mock_item.dataset.id = "ds1"
-        return mock_item
 
-    def _setup_runner_and_mocks(self, query_text: str):
-        G = _build_sample_graph()
-        runner = _make_runner_no_init(graph=G, dataset_id="ds1")
-        mock_item = self._make_mock_item(query_text)
         mock_dataset = runner._datasets["ds1"]
         mock_dataset.items = MagicMock()
-
         uploaded = MagicMock()
         uploaded.id = "context_item_id"
         mock_dataset.items.upload.return_value = uploaded
 
-        return runner, mock_item, mock_dataset, query_text
+        return mock_item, mock_dataset
+
+    def test_add_chunks_builds_graph(self):
+        runner = self._build_graph_with_chunks()
+        G = runner._graphs["ds1"]
+
+        self.assertGreater(G.number_of_nodes(), 0)
+        self.assertGreater(G.number_of_edges(), 0)
+        self.assertIn("Person:Worker", G)
+        self.assertIn("Person:Manager", G)
+        self.assertIn("Equipment:Hard Hat", G)
+        self.assertTrue(G.has_edge("Person:Worker", "Equipment:Hard Hat"))
+        self.assertTrue(G.has_edge("Person:Manager", "Equipment:Hard Hat"))
+        self.assertTrue(runner._was_updated["ds1"])
 
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
     @patch("dtlpy.PromptItem")
-    def test_keyword_only(self, mock_prompt_cls, mock_extract):
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("worker")
-        mock_extract.return_value = "worker"
-
-        mock_pi = MagicMock()
-        mock_pi.prompts = [MagicMock()]
-        mock_pi.prompts[0].metadata = {}
-        mock_prompt_cls.from_item.return_value = mock_pi
-
-        result = runner.query_graph(item=mock_item, dataset=mock_dataset)
-        self.assertEqual(result, mock_item)
-        mock_dataset.items.upload.assert_called_once()
-
-    @patch.object(ServiceRunner, "_extract_query_from_prompt")
-    @patch("dtlpy.PromptItem")
-    def test_structured_only(self, mock_prompt_cls, mock_extract):
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("")
+    def test_query_filters_only(self, mock_prompt_cls, mock_extract):
+        """Pattern match with no user query — only structural filters."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "")
         mock_extract.return_value = ""
-
-        mock_pi = MagicMock()
-        mock_pi.prompts = [MagicMock()]
-        mock_pi.prompts[0].metadata = {}
-        mock_prompt_cls.from_item.return_value = mock_pi
+        mock_prompt_cls.from_item.return_value = _make_prompt_mock()
 
         result = runner.query_graph(
             item=mock_item, dataset=mock_dataset, relationship="WEARS",
         )
+
         self.assertEqual(result, mock_item)
         mock_dataset.items.upload.assert_called_once()
+        meta = mock_dataset.items.upload.call_args.kwargs["item_metadata"]["user"]
+        self.assertGreater(meta["num_triples"], 0)
+        self.assertEqual(meta["source_query"], "")
 
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
     @patch("dtlpy.PromptItem")
-    def test_combined_filters_and_keyword(self, mock_prompt_cls, mock_extract):
-        """Pattern match narrows to Worker edges, local search refines by 'wears'."""
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("what does worker wear")
-        mock_extract.return_value = "what does worker wear"
+    def test_query_keyword_only(self, mock_prompt_cls, mock_extract):
+        """Local search with no structural filters — keyword on full graph."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "worker")
+        mock_extract.return_value = "worker"
+        mock_prompt_cls.from_item.return_value = _make_prompt_mock()
 
-        mock_pi = MagicMock()
-        mock_pi.prompts = [MagicMock()]
-        mock_pi.prompts[0].metadata = {}
-        mock_prompt_cls.from_item.return_value = mock_pi
+        result = runner.query_graph(item=mock_item, dataset=mock_dataset)
 
-        result = runner.query_graph(
-            item=mock_item, dataset=mock_dataset,
-            entity_name="worker",
-        )
         self.assertEqual(result, mock_item)
         mock_dataset.items.upload.assert_called_once()
-        uploaded_meta = mock_dataset.items.upload.call_args
-        user_meta = uploaded_meta.kwargs.get("item_metadata", {}).get("user", {})
-        self.assertGreater(user_meta.get("num_triples", 0), 0)
+        meta = mock_dataset.items.upload.call_args.kwargs["item_metadata"]["user"]
+        self.assertGreater(meta["num_triples"], 0)
+        self.assertEqual(meta["source_query"], "worker")
 
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
-    def test_no_query_no_filters_skips(self, mock_extract):
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("")
+    @patch("dtlpy.PromptItem")
+    def test_query_filters_and_keyword(self, mock_prompt_cls, mock_extract):
+        """Pattern match narrows to Worker, local search refines by 'wear'."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "what does worker wear")
+        mock_extract.return_value = "what does worker wear"
+        mock_prompt_cls.from_item.return_value = _make_prompt_mock()
+
+        result = runner.query_graph(
+            item=mock_item, dataset=mock_dataset, entity_name="worker",
+        )
+
+        self.assertEqual(result, mock_item)
+        mock_dataset.items.upload.assert_called_once()
+        meta = mock_dataset.items.upload.call_args.kwargs["item_metadata"]["user"]
+        self.assertGreater(meta["num_triples"], 0)
+        # Should find WEARS within Worker's subgraph
+        self.assertGreater(meta["num_source_chunks"], 0)
+
+    @patch.object(ServiceRunner, "_extract_query_from_prompt")
+    def test_query_no_filters_no_text_skips(self, mock_extract):
+        """No filters and no user query — returns item unchanged."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "")
         mock_extract.return_value = ""
 
         result = runner.query_graph(item=mock_item, dataset=mock_dataset)
+
         self.assertEqual(result, mock_item)
         mock_dataset.items.upload.assert_not_called()
 
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
-    def test_empty_graph_skips(self, mock_extract):
-        runner = _make_runner_no_init(graph=nx.DiGraph(), dataset_id="ds1")
-        mock_item = self._make_mock_item("worker")
+    def test_query_empty_graph_skips(self, mock_extract):
+        """Empty graph — returns item unchanged."""
+        runner = _make_runner(graph=nx.DiGraph(), dataset_id="ds1")
+        mock_item = MagicMock()
+        mock_item.id = "prompt_item_1"
+        mock_item.name = "prompt.json"
+        mock_item.dir = "/"
         mock_extract.return_value = "worker"
         mock_dataset = runner._datasets["ds1"]
         mock_dataset.items = MagicMock()
 
         result = runner.query_graph(item=mock_item, dataset=mock_dataset)
+
         self.assertEqual(result, mock_item)
         mock_dataset.items.upload.assert_not_called()
 
     @patch.object(ServiceRunner, "_extract_query_from_prompt")
     @patch("dtlpy.PromptItem")
-    def test_nearest_items_appended(self, mock_prompt_cls, mock_extract):
-        runner, mock_item, mock_dataset, _ = self._setup_runner_and_mocks("worker")
+    def test_nearest_items_appended_not_overwritten(self, mock_prompt_cls, mock_extract):
+        """nearestItems from previous pipeline nodes are preserved."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "worker")
         mock_extract.return_value = "worker"
 
-        mock_pi = MagicMock()
-        mock_pi.prompts = [MagicMock()]
+        mock_pi = _make_prompt_mock()
         mock_pi.prompts[0].metadata = {"nearestItems": ["existing_id"]}
         mock_prompt_cls.from_item.return_value = mock_pi
 
@@ -456,6 +531,25 @@ class TestQueryGraphIntegration(unittest.TestCase):
         self.assertIn("context_item_id", nearest)
         self.assertEqual(len(nearest), 2)
 
+    @patch.object(ServiceRunner, "_extract_query_from_prompt")
+    @patch("dtlpy.PromptItem")
+    def test_filters_narrow_keyword_scope(self, mock_prompt_cls, mock_extract):
+        """With entity_name='manager', keyword 'wear' finds nothing
+        (WEARS is on Worker, not Manager) — verifies subgraph narrowing."""
+        runner = self._build_graph_with_chunks()
+        mock_item, mock_dataset = self._setup_query_mocks(runner, "wear")
+        mock_extract.return_value = "wear"
+        mock_prompt_cls.from_item.return_value = _make_prompt_mock()
+
+        result = runner.query_graph(
+            item=mock_item, dataset=mock_dataset, entity_name="manager",
+        )
+
+        self.assertEqual(result, mock_item)
+        # Manager's subgraph has INSPECTS, not WEARS — keyword 'wear'
+        # finds nothing within the narrowed scope.
+        mock_dataset.items.upload.assert_not_called()
+
 
 # ------------------------------------------------------------------ #
 #  Tests — Background saver thread                                     #
@@ -463,51 +557,46 @@ class TestQueryGraphIntegration(unittest.TestCase):
 
 class TestBackgroundSaver(unittest.TestCase):
     def test_saver_thread_starts_as_daemon(self):
-        runner = _make_runner_no_init(graph=_build_sample_graph())
+        runner = _make_runner(graph=_build_sample_graph())
         runner._saver_thread.start()
         self.assertTrue(runner._saver_thread.is_alive())
         self.assertTrue(runner._saver_thread.daemon)
         runner._stop_event.set()
         runner._saver_thread.join(timeout=2)
 
-    def test_flush_uploads_dirty_graph(self):
+    def test_flush_uploads_updated_graph(self):
         G = _build_sample_graph()
-        runner = _make_runner_no_init(graph=G, dataset_id="ds1")
-        runner._dirty["ds1"] = True
+        runner = _make_runner(graph=G, dataset_id="ds1")
+        runner._was_updated["ds1"] = True
 
         with patch.object(runner, "_upload_graph") as mock_upload, \
              patch.object(runner, "_visualize_and_upload") as mock_viz:
-            runner._flush_dirty_graphs()
+            runner._upload_updated_graphs()
 
         mock_upload.assert_called_once_with(G, runner._datasets["ds1"])
         mock_viz.assert_called_once_with(G, runner._datasets["ds1"])
-        self.assertFalse(runner._dirty["ds1"])
+        self.assertFalse(runner._was_updated["ds1"])
 
     def test_flush_skips_clean_graph(self):
-        runner = _make_runner_no_init(graph=_build_sample_graph(), dataset_id="ds1")
-        runner._dirty["ds1"] = False
+        runner = _make_runner(graph=_build_sample_graph(), dataset_id="ds1")
+        runner._was_updated["ds1"] = False
 
         with patch.object(runner, "_upload_graph") as mock_upload:
-            runner._flush_dirty_graphs()
+            runner._upload_updated_graphs()
 
         mock_upload.assert_not_called()
 
     def test_flush_retries_on_failure(self):
         G = _build_sample_graph()
-        runner = _make_runner_no_init(graph=G, dataset_id="ds1")
-        runner._dirty["ds1"] = True
+        runner = _make_runner(graph=G, dataset_id="ds1")
+        runner._was_updated["ds1"] = True
 
         with patch.object(runner, "_upload_graph", side_effect=Exception("network")), \
              patch.object(runner, "_visualize_and_upload"):
-            runner._flush_dirty_graphs()
+            runner._upload_updated_graphs()
 
-        self.assertTrue(runner._dirty["ds1"])
-
-    def test_mark_dirty(self):
-        runner = _make_runner_no_init(graph=_build_sample_graph(), dataset_id="ds1")
-        self.assertFalse(runner._dirty["ds1"])
-        runner._mark_dirty("ds1")
-        self.assertTrue(runner._dirty["ds1"])
+        # Flag stays True so next cycle retries
+        self.assertTrue(runner._was_updated["ds1"])
 
 
 # ------------------------------------------------------------------ #
@@ -517,7 +606,7 @@ class TestBackgroundSaver(unittest.TestCase):
 class TestThreadSafety(unittest.TestCase):
     def test_concurrent_merges(self):
         G = nx.DiGraph()
-        runner = _make_runner_no_init(graph=G, dataset_id="ds1")
+        runner = _make_runner(graph=G, dataset_id="ds1")
         errors = []
 
         def merge_chunk(i):
@@ -528,7 +617,7 @@ class TestThreadSafety(unittest.TestCase):
                         [{"name": f"Entity{i}", "type": "Object"}],
                         [],
                     )
-                    runner._mark_dirty("ds1")
+                    runner._was_updated["ds1"] = True
             except Exception as e:
                 errors.append(e)
 
@@ -540,10 +629,10 @@ class TestThreadSafety(unittest.TestCase):
 
         self.assertEqual(len(errors), 0)
         self.assertEqual(len([n for n in G if n.startswith("Chunk:")]), 20)
-        self.assertTrue(runner._dirty["ds1"])
+        self.assertTrue(runner._was_updated["ds1"])
 
     def test_get_graph_lazy_load_thread_safe(self):
-        runner = _make_runner_no_init()
+        runner = _make_runner()
         new_ds = MagicMock()
         new_ds.id = "ds_new"
 

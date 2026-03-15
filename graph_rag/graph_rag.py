@@ -23,90 +23,13 @@ GRAPH_FILENAME = "knowledge_graph.json"
 #  add_chunk_to_graph accepts two input formats:                         #
 #                                                                        #
 #  1. Prompt item — LLM guided-JSON response.                            #
-#     assistant msg = JSON matching GRAPH_EXTRACTION_SCHEMA              #
+#     assistant msg = JSON matching assets/graph_extraction_schema.json  #
 #                                                                        #
 #  2. JSON file item:                                                    #
 #     {"chunk_name", "text", "entities": [...], "relationships": [...]}  #
 #                                                                        #
 #  One graph is maintained per dataset (knowledge_graph.json).           #
 # ====================================================================== #
-
-GRAPH_EXTRACTION_PROMPT = (
-    "You are a knowledge-graph extraction engine. "
-    "Given a text passage, extract the most important entities and "
-    "the relationships between them.\n\n"
-    "Entity rules:\n"
-    "- Use Title Case canonical names (\"Assembly Line\", not \"assembly-line\").\n"
-    "- Merge synonyms into one canonical name "
-    "(pick the most common form, e.g. \"Car\" not \"car/vehicle/automobile\").\n"
-    "- SKIP low-value entities: URLs, watermarks, colors, directions, "
-    "generic sizes, timestamps.\n"
-    "- Focus on meaningful nouns: people, objects, places, organizations, "
-    "concepts, events.\n"
-    "- Prefer specific names over generic ones "
-    "(\"Forklift\" not \"Vehicle\", \"Warehouse\" not \"Building\").\n\n"
-    "Relationship rules:\n"
-    "- \"source\" and \"target\" MUST exactly match an entity \"name\".\n"
-    "- \"relation\" must be a short UPPER_SNAKE_CASE verb "
-    "(e.g. LOCATED_IN, OPERATES, CONTAINS, PART_OF, CAUSES, PRODUCES).\n"
-    "- Only include relationships clearly stated or strongly implied.\n"
-    "- Do NOT invent relationships that require speculation.\n\n"
-    "Return valid JSON matching the provided schema."
-)
-
-GRAPH_EXTRACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "entities": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Canonical name of the entity",
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Entity type, e.g. Person, Object, Location, "
-                        "Organisation, Concept, Event, Equipment, Attribute",
-                    },
-                },
-                "required": ["name", "type"],
-            },
-            "minItems": 2,
-            "maxItems": 8,
-        },
-        "relationships": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "source": {
-                        "type": "string",
-                        "description": "Must match an entity name exactly",
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "Must match an entity name exactly",
-                    },
-                    "relation": {
-                        "type": "string",
-                        "description": "UPPER_SNAKE_CASE verb, e.g. PLACES, CAUSES, LOCATED_IN",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Free-text description of this relationship",
-                    },
-                },
-                "required": ["source", "target", "relation"],
-            },
-            "minItems": 1,
-            "maxItems": 10,
-        },
-    },
-    "required": ["entities", "relationships"],
-}
 
 
 STOP_WORDS = {
@@ -129,10 +52,10 @@ STOP_WORDS = {
 
 class ServiceRunner(dl.BaseServiceRunner):
 
-    def __init__(self, project_id: dl.Project=None):
+    def __init__(self, project_id: str=None):
         super().__init__()
         self._graphs: dict[str, nx.DiGraph] = {}
-        self._dirty: dict[str, bool] = {}
+        self._was_updated: dict[str, bool] = {}
         self._datasets: dict[str, dl.Dataset] = {}
         self.graph_filename = GRAPH_FILENAME
         self.graph_path = GRAPH_PATH
@@ -164,7 +87,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         for dataset in project.datasets.list():
             G = self._download_graph(dataset)
             self._graphs[dataset.id] = G
-            self._dirty[dataset.id] = False
+            self._was_updated[dataset.id] = False
             self._datasets[dataset.id] = dataset
             logger.info(
                 f"Init: loaded graph for dataset {dataset.name!r} ({dataset.id}) "
@@ -184,43 +107,35 @@ class ServiceRunner(dl.BaseServiceRunner):
                 # re-check after acquiring lock
                 if ds_id not in self._graphs:
                     self._graphs[ds_id] = self._download_graph(dataset)
-                    self._dirty[ds_id] = False
+                    self._was_updated[ds_id] = False
                     self._datasets[ds_id] = dataset
                     logger.info(f"Lazy-loaded graph for new dataset {dataset.id}")
         return self._graphs[ds_id]
 
-    def _mark_dirty(self, dataset_id: str):
-        self._dirty[dataset_id] = True
-
     # ------------------------------------------------------------------ #
-    #  Background saver — uploads every SAVE_INTERVAL_SEC if dirty         #
+    #  Background saver — uploads every SAVE_INTERVAL_SEC if was_updated         #
     # ------------------------------------------------------------------ #
     def _background_saver(self):
         while not self._stop_event.is_set():
             self._stop_event.wait(timeout=SAVE_INTERVAL_SEC)
-            self._flush_dirty_graphs()
+            self._upload_updated_graphs()
 
-    def _flush_dirty_graphs(self):
-        for ds_id in list(self._dirty):
-            if not self._dirty.get(ds_id):
-                continue
-            with self._lock:
-                # re-check after acquiring lock — another thread may have saved it
-                if not self._dirty.get(ds_id):
-                    continue
-                G = self._graphs[ds_id]
-                dataset = self._datasets[ds_id]
-                self._dirty[ds_id] = False
-            try:
-                self._upload_graph(G, dataset)
-                self._visualize_and_upload(G, dataset)
-                logger.info(
-                    f"Background save: dataset {ds_id} — "
-                    f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
-                )
-            except Exception:
-                logger.exception(f"Background save failed for dataset {ds_id}")
-                self._dirty[ds_id] = True
+    def _upload_updated_graphs(self):
+        for ds_id in list(self._was_updated):
+            if self._was_updated.get(ds_id):
+                with self._lock:
+                    G = self._graphs[ds_id]
+                    dataset = self._datasets[ds_id]
+                try:
+                    self._upload_graph(G, dataset)
+                    self._visualize_and_upload(G, dataset)
+                    self._was_updated[ds_id] = False
+                    logger.info(
+                        f"Background save: dataset {ds_id} — "
+                        f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges"
+                    )
+                except Exception:
+                    logger.exception(f"Background save failed for dataset {ds_id}")
 
     # ------------------------------------------------------------------ #
     #  Graph download / upload helpers                                     #
@@ -353,7 +268,7 @@ class ServiceRunner(dl.BaseServiceRunner):
                 G, chunk_name, text, item.id, entities, relationships,
                 store_text=store_text,
             )
-            self._mark_dirty(dataset.id)
+            self._was_updated[dataset.id] = True
 
         logger.info(
             f"Added chunk {chunk_name!r} to graph (dataset {dataset.id}) "
@@ -501,6 +416,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         Matched sub-graphs are expanded via BFS up to ``hops`` levels
         to collect source chunk texts.
         """
+
         query_text = self._extract_query_from_prompt(item)
         matched_edges: list[tuple] = []
         chunks: list[dict] = []
@@ -509,89 +425,87 @@ class ServiceRunner(dl.BaseServiceRunner):
         has_graph = G.number_of_nodes() > 0
         has_filters = bool(entity_name or relationship or target_name)
 
+        run_search = True
+
         if not has_graph:
             logger.warning("No graph data available in this dataset.")
+            run_search = False
+
         elif not has_filters and not query_text:
             logger.warning(f"No query text or filters for prompt item {item.id}")
-        else:
-            if has_filters:
-                # Filters narrow the search scope — build a subgraph
-                # from the structural matches so the keyword query
-                # only searches within the filtered portion.
-                matched_edges, chunks = self._pattern_match(
-                    G, entity_name, relationship, target_name, hops,
-                )
+            run_search = False
+
+        if run_search:
             search_graph = G
-            if has_filters and matched_edges:
-                subgraph_nodes = set()
-                for u, v, _ in matched_edges:
-                    subgraph_nodes.update({u, v})
-                for c in chunks:
-                    subgraph_nodes.add(c["node_id"])
-                search_graph = G.subgraph(subgraph_nodes)
+
+            if has_filters:
+                matched_edges, chunks = self._pattern_match(
+                    G, entity_name, relationship, target_name, hops
+                )
+
+                if matched_edges:
+                    subgraph_nodes = set()
+                    for u, v, _ in matched_edges:
+                        subgraph_nodes.update({u, v})
+
+                    for c in chunks:
+                        subgraph_nodes.add(c["node_id"])
+
+                    search_graph = G.subgraph(subgraph_nodes)
+
             if query_text:
-                kw_edges, kw_chunks = self._local_search(
-                    search_graph, query_text, hops,
+                matched_edges, chunks = self._local_search(
+                    search_graph, query_text, hops
                 )
-                if has_filters:
-                    # Keyword refines within the filtered subgraph —
-                    # replace the broad structural results with the
-                    # narrower keyword matches.
-                    matched_edges = kw_edges
-                    chunks = kw_chunks
-                else:
-                    matched_edges = kw_edges
-                    chunks = kw_chunks
 
-        # Build context and attach to prompt only when we have results.
-        if matched_edges or chunks:
-            context = self._build_context(
-                G, matched_edges, chunks,
-            )
-            source_items = [
-                {"item_id": c["item_id"], "name": c["name"]}
-                for c in chunks if c.get("item_id")
-            ]
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False, encoding="utf-8",
-            )
-            try:
-                tmp.write(context)
-                tmp.close()
-                context_item = dataset.items.upload(
-                    local_path=tmp.name,
-                    remote_name=f"context-{item.name}--{datetime.now().strftime('%Y%m%d%H%M%S')}.txt",
-                    remote_path=item.dir,
-                    overwrite=True,
-                    item_metadata={
-                        "user": {
-                            "type": "graph_rag_context",
-                            "source_query": query_text or "",
-                            "num_triples": len(matched_edges),
-                            "num_source_chunks": len(chunks),
-                            "source_chunks": source_items,
-                        }
-                    },
+            if matched_edges or chunks:
+                context = self._build_context(G, matched_edges, chunks)
+
+                source_items = [
+                    {"item_id": c["item_id"], "name": c["name"]}
+                    for c in chunks if c.get("item_id")
+                ]
+
+                tmp = tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".txt", delete=False, encoding="utf-8"
                 )
-            finally:
-                os.remove(tmp.name)
 
-            # Append to existing nearestItems so other pipeline nodes
-            # (e.g. vector retriever) aren't overwritten.
-            logger.info(f"Appending context item {context_item.id} to nearest items")
-            prompt_item = dl.PromptItem.from_item(item)
-            existing = prompt_item.prompts[-1].metadata.get("nearestItems", [])
-            if existing:
+                try:
+                    tmp.write(context)
+                    tmp.close()
+
+                    context_item = dataset.items.upload(
+                        local_path=tmp.name,
+                        remote_name=f"context-{item.name}--{datetime.now().strftime('%Y%m%d%H%M%S')}.txt",
+                        remote_path=item.dir,
+                        overwrite=True,
+                        item_metadata={
+                            "user": {
+                                "type": "graph_rag_context",
+                                "source_query": query_text or "",
+                                "num_triples": len(matched_edges),
+                                "num_source_chunks": len(chunks),
+                                "source_chunks": source_items,
+                            }
+                        },
+                    )
+                finally:
+                    os.remove(tmp.name)
+
+                logger.info(f"Appending context item {context_item.id} to nearest items")
+
+                prompt_item = dl.PromptItem.from_item(item)
+                existing = prompt_item.prompts[-1].metadata.get("nearestItems", [])
                 existing.append(context_item.id)
-            else:
-                existing = [context_item.id]
-            prompt_item.prompts[-1].add_element(
-                mimetype=dl.PromptType.METADATA,
-                value={"nearestItems": existing},
-                )
-            prompt_item.update()
 
-        return item # Returns the prompt item with the nearest items appended
+                prompt_item.prompts[-1].add_element(
+                    mimetype=dl.PromptType.METADATA,
+                    value={"nearestItems": existing},
+                )
+
+                prompt_item.update()
+
+        return item
 
     # ------------------------------------------------------------------ #
     #  Pattern Match — Cypher-like filtering                               #
@@ -621,21 +535,19 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         for u, v, d in G.edges(data=True):
             edge_label = d.get("label", "")
-            if edge_label == "MENTIONS":
-                continue
-            if relationship and edge_label.upper() != relationship.strip().upper():
-                continue
-
             u_label = G.nodes[u].get("label", "") if u in G.nodes else ""
             v_label = G.nodes[v].get("label", "") if v in G.nodes else ""
 
-            if not _matches(entity_name, u_label):
-                continue
-            if not _matches(target_name, v_label):
-                continue
+            valid_edge = (
+                edge_label != "MENTIONS"
+                and (not relationship or edge_label.upper() == relationship.strip().upper())
+                and _matches(entity_name, u_label)
+                and _matches(target_name, v_label)
+            )
 
-            matched_edges.append((u, v, d))
-            seed_nodes.update({u, v})
+            if valid_edge:
+                matched_edges.append((u, v, d))
+                seed_nodes.update({u, v})
 
         chunks = ServiceRunner._collect_chunks_bfs(G, seed_nodes, hops)
         return matched_edges, chunks

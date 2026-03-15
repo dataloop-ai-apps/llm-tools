@@ -1,12 +1,21 @@
 {
   "name": "graph-rag",
   "displayName": "Graph RAG",
-  "version": "0.0.11",
+  "version": "0.0.13",
   "description": "Knowledge graph construction, retrieval, and visualization for RAG pipelines.",
+  "attributes": {
+    "Provider": "Dataloop",
+    "Category": "Application",
+    "Application Type": "Pipeline Node",
+    "Deployed By": "Dataloop",
+    "Media Type": [
+      "Text"
+    ]
+  },
   "codebase": {
     "type": "git",
     "gitUrl": "https://github.com/dataloop-ai-apps/llm-tools.git",
-    "gitTag": "0.0.11"
+    "gitTag": "0.0.13"
   },
   "components": {
     "modules": [
@@ -81,10 +90,10 @@
         "runtime": {
           "podType": "regular-s",
           "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/graph-rag:0.0.11",
-          "concurrency": 5,
+          "concurrency": 0,
           "autoscaler": {
             "type": "rabbitmq",
-            "minReplicas": 1,
+            "minReplicas": 0,
             "maxReplicas": 1
           }
         }

@@ -305,10 +305,17 @@ them simultaneously, keyed by `dataset.id`.
 
 ---
 
-## LLM extraction prompt
+## Assets
 
-The extraction is driven by `GRAPH_EXTRACTION_PROMPT` and
-`GRAPH_EXTRACTION_SCHEMA`.  The prompt instructs the LLM to:
+The `assets/` folder contains the LLM extraction prompt and the guided-JSON
+schema used by the upstream extraction node.
+
+| File | Description |
+|------|-------------|
+| [`graph_extraction_prompt.txt`](assets/graph_extraction_prompt.txt) | System prompt for the LLM extraction node |
+| [`graph_extraction_schema.json`](assets/graph_extraction_schema.json) | Guided JSON schema enforcing structured output |
+
+The prompt instructs the LLM to:
 
 - Extract 2–8 entities per chunk (Title Case, canonical names, no low-value noise).
 - Extract 1–10 relationships per chunk (UPPER_SNAKE_CASE verbs like `LOCATED_IN`,
@@ -316,8 +323,7 @@ The extraction is driven by `GRAPH_EXTRACTION_PROMPT` and
 - Only include relationships clearly stated or strongly implied — no speculation.
 - Merge synonyms into one canonical form.
 
-The schema enforces structure via JSON Schema (guided generation), so the LLM
-output is always parseable.
+Some models support guided schemas, which constrain generation to a predefined structure and ensure the output is always parseable.
 
 **Supported entity types:** Person, Object, Location, Organisation, Concept,
 Event, Equipment, Attribute.
