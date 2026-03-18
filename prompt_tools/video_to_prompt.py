@@ -29,7 +29,7 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         video_stream_url = STREAM_URL_TEMPLATE.format(item_id=item.id)
 
-        prompt_item = dl.PromptItem(name=f'video-prompt-{item.id[:8]}')
+        prompt_item = dl.PromptItem(name=f'video-prompt-{item.id}')
 
         message = {
             "role": "user",
