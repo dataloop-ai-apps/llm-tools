@@ -4,6 +4,8 @@ import json
 
 logger = logging.getLogger('[RETRIEVER]')
 
+SUPPORTED_DL_TYPES = ['prompt', 'llm_trace']
+
 
 class Retriever(dl.BaseServiceRunner):
 
@@ -29,8 +31,10 @@ class Retriever(dl.BaseServiceRunner):
         dataset_id = dataset.id
         feature_set_id = embedder.feature_set.id
 
-        if item.metadata.get('system', dict()).get('shebang', dict()).get('dltype') != 'prompt':
-            raise ValueError(f'Only prompt items are supported. Cant run for item: {item.id}')
+        dl_type = item.metadata.get('system', dict()).get('shebang', dict()).get('dltype')
+        if dl_type not in SUPPORTED_DL_TYPES:
+            raise ValueError(f'Only prompt items of dltype {SUPPORTED_DL_TYPES} are supported. Cant run for item: {item.id}')
+        
         logger.info(f'Starting run with: '
                     f'dataset: {dataset_id}, '
                     f'feature set: {feature_set_id}, '
@@ -82,11 +86,27 @@ class Retriever(dl.BaseServiceRunner):
                              page_size=k)
         res = dl.datasets.get(dataset_id=dataset_id).items.list(filters=filters)
         nearest_items = res.items[:k]
+        
         # add nearest items to the prompt
-        prompt_item = dl.PromptItem.from_item(item)
-        prompt_item.prompts[-1].add_element(mimetype=dl.PromptType.METADATA,
-                                            value={'nearestItems': [item.id for item in nearest_items]})
-        prompt_item.update()
+        if dl_type == 'prompt':
+            prompt_item = dl.PromptItem.from_item(item=item)
+            prompt_item.prompts[-1].add_element(
+                mimetype=dl.PromptType.METADATA,
+                value={'nearestItems': [n_item.id for n_item in nearest_items]}
+            )
+            prompt_item.update()
+        elif dl_type == 'llm_trace':
+            trace_item = dl.LLMTrace.from_item(item=item)
+            message_index = -1
+            trace_context = [
+                dl.LLMContext(item_id=n_item.id, filename=n_item.filename)
+                for n_item in nearest_items
+            ]
+            trace_item.add_context(contexts=trace_context, message_index=message_index)
+            trace_item.update()
+        else:
+            raise ValueError(f'Unsupported dltype: {dl_type}')
+
         return item
 
 
