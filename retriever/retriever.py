@@ -98,11 +98,11 @@ class Retriever(dl.BaseServiceRunner):
         elif dl_type == 'llm_trace':
             trace_item = dl.LLMTrace.from_item(item=item)
             message_index = -1
-            trace_context = [
+            trace_contexts = [
                 dl.LLMContext(item_id=n_item.id, filename=n_item.filename)
                 for n_item in nearest_items
             ]
-            trace_item.add_context(contexts=trace_context, message_index=message_index)
+            trace_item.add_context(contexts=trace_contexts, message_index=message_index)
             trace_item.update()
         else:
             raise ValueError(f'Unsupported dltype: {dl_type}')
