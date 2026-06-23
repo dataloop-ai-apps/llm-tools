@@ -5,10 +5,10 @@
   "version": "0.0.14",
   "description": "Pipeline nodes for building prompt items: group frames into batches or create video prompts for VLM inference.",
   "attributes": {
-    "Provider": "Dataloop",
+    "Provider": "DDOE",
     "Category": "Application",
     "Application Type": "Pipeline Node",
-    "Deployed By": "Dataloop",
+    "Deployed By": "DDOE",
     "Media Type": [
       "Image",
       "Text",

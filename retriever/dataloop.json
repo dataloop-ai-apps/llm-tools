@@ -4,10 +4,10 @@
   "scope": "public",
   "version": "0.0.14",
   "attributes": {
-    "Provider": "Dataloop",
+    "Provider": "DDOE",
     "Category": "Application",
     "Application Type": "Pipeline Node",
-    "Deployed By": "Dataloop",
+    "Deployed By": "DDOE",
     "Media Type": [
       "Text"
     ]
